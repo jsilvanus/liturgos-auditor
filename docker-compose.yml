@@ -6,7 +6,8 @@ services:
     ports:
       - "8090:8090"
     environment:
-      AUDITOR_STT_MODEL: ${AUDITOR_STT_MODEL:-Systran/faster-whisper-large-v3-turbo}
+      # Use faster-whisper's built-in model alias so the model source stays valid.
+      AUDITOR_STT_MODEL: ${AUDITOR_STT_MODEL:-large-v3-turbo}
       AUDITOR_STT_MODEL_DIR: /models
       AUDITOR_STT_DEVICE: ${AUDITOR_STT_DEVICE:-cpu}
       AUDITOR_STT_DEFAULT_LANGUAGE: ${AUDITOR_STT_DEFAULT_LANGUAGE:-fi}
