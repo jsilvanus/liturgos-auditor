@@ -44,6 +44,7 @@ training = [
     "torch>=2.2",
     "transformers>=4.45",
     "accelerate>=0.30",
+    "jiwer>=3.0",
 ]
 
 [project.scripts]
