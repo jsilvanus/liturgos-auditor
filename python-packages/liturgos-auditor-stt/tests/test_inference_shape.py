@@ -18,7 +18,19 @@ class _StubModelHost:
 
     def transcribe(self, audio_path, language=None):
         self.calls.append({"audio_path": audio_path, "language": language})
-        return {"text": "moi maailma", "language": language, "segments": []}
+        return {
+            "text": "moi maailma",
+            "language": language,
+            "segments": [{
+                "start": 0.0,
+                "end": 1.5,
+                "text": "moi maailma",
+                "words": [
+                    {"start": 0.0, "end": 0.4, "text": "moi", "probability": 0.99},
+                    {"start": 0.5, "end": 1.5, "text": " maailma", "probability": 0.98},
+                ],
+            }],
+        }
 
 
 def _client():
@@ -39,7 +51,9 @@ def test_inference_returns_whisper_cpp_compatible_shape():
     body = resp.json()
     assert body["text"] == "moi maailma"
     assert body["language"] == "en"
-    assert body["segments"] == []
+    assert body["segments"][0]["words"][0]["start"] == 0.0
+    assert body["segments"][0]["words"][0]["end"] == 0.4
+    assert body["segments"][0]["words"][0]["text"] == "moi"
     assert host.calls[0]["language"] == "en"
 
 
