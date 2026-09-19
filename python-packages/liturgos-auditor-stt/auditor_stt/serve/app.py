@@ -17,12 +17,13 @@ from .audio import temp_audio_file
 from .model import ModelHost, ModelLoadError
 from .queue import InferenceQueue, QueueFullError
 
-logger = logging.getLogger(__name__)
+
+DEFAULT_MODEL = "large-v3-turbo"
 
 
 def create_app(model_host: Optional[ModelHost] = None, queue: Optional[InferenceQueue] = None) -> FastAPI:
     host = model_host or ModelHost(
-        model_id=os.environ.get("AUDITOR_STT_MODEL", "Systran/faster-whisper-large-v3-turbo"),
+        model_id=os.environ.get("AUDITOR_STT_MODEL", DEFAULT_MODEL),
         model_dir=os.environ.get("AUDITOR_STT_MODEL_DIR"),
         device=os.environ.get("AUDITOR_STT_DEVICE", "auto"),
         compute_type=os.environ.get("AUDITOR_STT_COMPUTE_TYPE"),
