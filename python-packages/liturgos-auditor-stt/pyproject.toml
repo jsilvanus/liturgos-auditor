@@ -40,6 +40,11 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
 ]
+training = [
+    "torch>=2.2",
+    "transformers>=4.45",
+    "accelerate>=0.30",
+]
 
 [project.scripts]
 auditor-stt = "auditor_stt.cli:main"
