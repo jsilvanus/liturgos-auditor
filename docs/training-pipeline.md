@@ -5,7 +5,7 @@ The repository now has an end-to-end training path:
 1. Pull a validated text corpus from crowd-source-voice.
 2. Build a Hugging Face DatasetDict with train/dev/test splits.
 3. Fine-tune an OpenAI Whisper checkpoint with the local training command.
-4. Keep the held-out test split reserved for final evaluation.
+4. Evaluate the trained checkpoint on the held-out test split with WER.
 5. Convert the trained Transformers checkpoint to CTranslate2.
 6. Serve the converted model with the existing auditor-stt faster-whisper service.
 
@@ -34,6 +34,14 @@ Then:
 The defaults are intentionally conservative. Adjust batch size and accumulation to the available GPU memory.
 
 The resulting directory is a normal Transformers checkpoint and includes training_metadata.json.
+
+## Held-out evaluation
+
+Run this only after training:
+
+    python scripts/evaluate-whisper.py --model models/whisper-fi-v1 --dataset data/datasets/corpus-123
+
+The command writes test_metrics.json with the test-set word error rate (WER). The test split is never passed to the training loop.
 
 ## Export for inference
 
