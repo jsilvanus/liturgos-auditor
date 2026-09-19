@@ -63,13 +63,31 @@ class ModelHost:
     def transcribe(self, audio_path, language=None):
         if not self.loaded:
             raise RuntimeError("Model is not loaded yet")
-        segments, info = self.model.transcribe(audio_path, language=language)
+        segments, info = self.model.transcribe(
+            audio_path,
+            language=language,
+            word_timestamps=True,
+        )
         segments = list(segments)
         text = "".join(segment.text for segment in segments).strip()
         return {
             "text": text,
             "language": (info.language if info else None) or language,
             "segments": [
-                {"start": s.start, "end": s.end, "text": s.text.strip()} for s in segments
+                {
+                    "start": s.start,
+                    "end": s.end,
+                    "text": s.text.strip(),
+                    "words": [
+                        {
+                            "start": word.start,
+                            "end": word.end,
+                            "text": word.word,
+                            "probability": word.probability,
+                        }
+                        for word in (s.words or [])
+                    ],
+                }
+                for s in segments
             ],
         }
