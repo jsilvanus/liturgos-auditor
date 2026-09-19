@@ -7,7 +7,7 @@ import argparse
 import os
 
 
-DEFAULT_MODEL = "Systran/faster-whisper-large-v3-turbo"
+DEFAULT_MODEL = "large-v3-turbo"
 
 
 def main() -> None:
@@ -18,7 +18,7 @@ def main() -> None:
         "model",
         nargs="?",
         default=os.environ.get("AUDITOR_STT_MODEL", DEFAULT_MODEL),
-        help=f"Model ID (default: AUDITOR_STT_MODEL or {DEFAULT_MODEL})",
+        help=f"Model ID or faster-whisper alias (default: AUDITOR_STT_MODEL or {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--model-dir",
