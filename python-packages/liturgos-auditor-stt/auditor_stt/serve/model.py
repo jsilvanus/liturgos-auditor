@@ -1,12 +1,43 @@
 """faster-whisper model loading with GPU auto-detect and CPU int8 fallback."""
 
+import gc
 import logging
+import threading
+from typing import Optional
+
+import numpy
 
 # PyAV is faster-whisper's own decoder dependency; its errors are how an
 # undecodable upload surfaces (av.error.InvalidDataError is not an OSError).
 from av.error import FFmpegError
 
 logger = logging.getLogger(__name__)
+
+# Why CUDA is off for the rest of this process, or None while it is still worth trying.
+# A second CUDA attempt after a failed first one (typically missing runtime libraries,
+# e.g. cublas64_12.dll) hangs forever inside faster-whisper's encode(). That would
+# wedge a POST /model swap on a service that fell back to CPU at startup, so a failed
+# attempt is remembered and CUDA is not tried again until the process restarts.
+_CUDA_UNUSABLE: Optional[str] = None
+_cuda_state_lock = threading.Lock()
+
+
+def reset_cuda_state():
+    """Forget a failed CUDA attempt (for tests; a running service restarts to retry CUDA)."""
+    global _CUDA_UNUSABLE
+    with _cuda_state_lock:
+        _CUDA_UNUSABLE = None
+
+
+def _remember_cuda_failure(exc):
+    global _CUDA_UNUSABLE
+    reason = f"{type(exc).__name__}: {exc}"
+    with _cuda_state_lock:
+        first = _CUDA_UNUSABLE is None
+        if first:
+            _CUDA_UNUSABLE = reason
+    if first:
+        logger.warning("CUDA disabled for this process after: %s; restart the service to retry CUDA", reason)
 
 
 class ModelLoadError(Exception):
@@ -49,24 +80,46 @@ class ModelHost:
                     compute_type=compute_type,
                     download_root=self.model_dir,
                 )
+                # Warm-up: transcribe 1 second of silence to catch runtime library errors.
+                # This must pass word_timestamps=True (the test model asserts it).
+                silence = numpy.zeros(16000, dtype=numpy.float32)
+                segments, _ = self.model.transcribe(silence, language="en", word_timestamps=True)
+                list(segments)  # consume the generator
                 self.device = device
                 self.compute_type = compute_type
                 self.loaded = True
                 return
             except Exception as exc:  # noqa: BLE001 - any backend init failure should fall through to the next device
                 last_error = exc
-                logger.warning("Failed to load model on %s/%s: %s", device, compute_type, exc)
+                if device == "cuda":
+                    _remember_cuda_failure(exc)
+                if self._requested_device == "auto":
+                    logger.warning("Failed to load model on %s/%s: %s (%s)", device, compute_type, type(exc).__name__, exc)
+                    self.model = None
+                    gc.collect()
+                else:
+                    # Explicit device requested: raise immediately without fallback.
+                    raise ModelLoadError(f"Could not load model '{self.model_id}' on {device}/{compute_type}") from exc
         raise ModelLoadError(f"Could not load model '{self.model_id}' on any device") from last_error
 
     def _device_attempts(self):
-        if self._requested_device == "cuda":
-            return [("cuda", self._requested_compute_type or "float16")]
+        cuda = ("cuda", self._requested_compute_type or "float16")
+        cpu = ("cpu", self._requested_compute_type or "int8")
         if self._requested_device == "cpu":
-            return [("cpu", self._requested_compute_type or "int8")]
-        return [
-            ("cuda", self._requested_compute_type or "float16"),
-            ("cpu", self._requested_compute_type or "int8"),
-        ]
+            return [cpu]
+        reason = _CUDA_UNUSABLE
+        if reason is not None:
+            if self._requested_device == "cuda":
+                # Never construct a model: a further CUDA attempt may hang (see _CUDA_UNUSABLE).
+                raise ModelLoadError(
+                    f"Could not load model '{self.model_id}' on {cuda[0]}/{cuda[1]}: "
+                    f"CUDA is disabled for this process after: {reason}; restart the service to retry CUDA"
+                )
+            logger.info("Skipping CUDA for model %s: disabled for this process after: %s", self.model_id, reason)
+            return [cpu]
+        if self._requested_device == "cuda":
+            return [cuda]
+        return [cuda, cpu]
 
     def transcribe(
         self,

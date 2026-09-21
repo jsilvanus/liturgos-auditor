@@ -7,6 +7,10 @@ Both functions are pure: they only read the manifest they are given.
 
 from datetime import datetime, timezone
 
+# While a job has chunks left its ETA never drops below this: the API reserves 0.0 for
+# "finished", so an exhausted estimate reads as "about to finish".
+MIN_RUNNING_ETA_SECONDS = 1.0
+
 
 class IncompleteJobError(Exception):
     """A complete result was requested but some chunks have no result yet."""
@@ -66,10 +70,14 @@ def progress(manifest, chunks_done, now=None, baseline_chunks=0):
 
     `chunks_done` is the number of finished chunks, taken to be the first
     ones in order (the runner works sequentially). ETA is the wall-clock time
-    since `started_at` divided by the audio seconds done, times the seconds
-    left; None until something has been measured. After a resume, pass the
-    number of chunks that were already done when this run began as
-    `baseline_chunks`, so they do not count as work done in this run's time.
+    from the start to the last progress update (`updated_at` in the manifest)
+    divided by the audio seconds done, times the seconds left; None until
+    something has been measured. Between chunk completions it counts down as
+    time passes since that update, but while any chunk remains it stays at
+    MIN_RUNNING_ETA_SECONDS or more: 0.0 means finished, and only a job with
+    every chunk done reports it. After a resume, pass the number of chunks
+    that were already done when this run began as `baseline_chunks`, so they
+    do not count as work done in this run's time.
     """
     plan = _chunk_plan(manifest)
     chunks_total = len(plan)
@@ -95,9 +103,28 @@ def progress(manifest, chunks_done, now=None, baseline_chunks=0):
         now = now or datetime.now(timezone.utc)
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
-        elapsed = (now - datetime.fromisoformat(manifest["started_at"])).total_seconds()
-        if worked_seconds > 0 and elapsed > 0:
-            eta = elapsed / worked_seconds * (total_seconds - current_seconds)
+
+        started_at = datetime.fromisoformat(manifest["started_at"])
+
+        # Use the time of the last progress update (updated_at) to make ETA stable between completions
+        if manifest.get("updated_at"):
+            # With updated_at, ETA is based on the time of the last chunk completion
+            updated_at = datetime.fromisoformat(manifest["updated_at"])
+            elapsed = (updated_at - started_at).total_seconds()
+            if worked_seconds > 0 and elapsed > 0:
+                eta = elapsed / worked_seconds * (total_seconds - current_seconds)
+                # Subtract time since the update so ETA counts down smoothly
+                time_since_update = (now - updated_at).total_seconds()
+                eta -= time_since_update
+        else:
+            # Fallback: use now (old behavior when updated_at is not set)
+            elapsed = (now - started_at).total_seconds()
+            if worked_seconds > 0 and elapsed > 0:
+                eta = elapsed / worked_seconds * (total_seconds - current_seconds)
+
+        if eta is not None:
+            # Chunks remain, so the job is still running: an exhausted estimate is "about to finish", not 0.0.
+            eta = max(MIN_RUNNING_ETA_SECONDS, eta)
 
     return {
         "progress": percent,

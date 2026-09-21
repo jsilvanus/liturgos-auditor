@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -69,8 +71,11 @@ def test_model_maps_real_decode_failure_to_audio_decode_error(monkeypatch, tmp_p
         def __init__(self, *args, **kwargs):
             pass
 
-        def transcribe(self, audio_path, **kwargs):
-            decode_audio(audio_path)  # what faster-whisper does first; raises av.error.InvalidDataError
+        def transcribe(self, audio, **kwargs):
+            if not isinstance(audio, str):
+                # load() warms the model up with a silent sample array, which needs no decoding.
+                return iter([]), SimpleNamespace(language="en")
+            decode_audio(audio)  # what faster-whisper does first for a path; raises av.error.InvalidDataError
             raise AssertionError("garbage must not decode")
 
     monkeypatch.setattr(faster_whisper, "WhisperModel", _DecodingModel)

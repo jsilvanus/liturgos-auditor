@@ -170,6 +170,8 @@ def host(monkeypatch):
     monkeypatch.setattr(faster_whisper, "WhisperModel", _RecordingWhisperModel)
     model_host = ModelHost("test-model", device="cpu")
     model_host.load()
+    # load() warms the model up with a silent transcribe; only calls made by the test count.
+    model_host.model.calls.clear()
     return model_host
 
 

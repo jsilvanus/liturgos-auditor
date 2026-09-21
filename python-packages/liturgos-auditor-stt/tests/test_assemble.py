@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from auditor_stt.serve.jobs.assemble import IncompleteJobError, assemble, progress
+from auditor_stt.serve.jobs.assemble import MIN_RUNNING_ETA_SECONDS, IncompleteJobError, assemble, progress
 from auditor_stt.serve.jobs.chunking import Chunk
 
 RATE = 16000
@@ -181,3 +181,75 @@ def test_progress_now_defaults_to_the_current_time():
     started = datetime.now(timezone.utc) - timedelta(seconds=10)
     p = progress(_manifest(started_at=started), 1)
     assert p["eta_seconds"] is not None and p["eta_seconds"] > 0
+
+
+def test_eta_is_stable_between_completions():
+    """ETA is stable between chunk completions (based on updated_at, not now)."""
+    manifest = _manifest()
+    # Simulate a chunk completion at T0 + 30s
+    updated_at = T0 + timedelta(seconds=30)
+    manifest["updated_at"] = updated_at.isoformat()
+
+    # Poll at different times after the update
+    eta_at_update = progress(manifest, 1, now=updated_at)["eta_seconds"]
+    eta_2s_later = progress(manifest, 1, now=updated_at + timedelta(seconds=2))["eta_seconds"]
+    eta_5s_later = progress(manifest, 1, now=updated_at + timedelta(seconds=5))["eta_seconds"]
+
+    # ETA should decrease smoothly as time passes
+    assert eta_at_update == pytest.approx(45.0)  # 60s of audio took 30s, 90s remain
+    assert eta_2s_later == pytest.approx(43.0)  # Decreased by 2s
+    assert eta_5s_later == pytest.approx(40.0)  # Decreased by 5s
+
+
+def test_a_running_eta_never_reaches_zero():
+    """The estimate runs out, but 0.0 means finished: a job with chunks left reads "about to finish"."""
+    manifest = _manifest()
+    # Simulate a chunk completion at T0 + 30s
+    updated_at = T0 + timedelta(seconds=30)
+    manifest["updated_at"] = updated_at.isoformat()
+
+    # Poll exactly when the 45 s estimate runs out, and long after it.
+    for later in (45, 200):
+        eta = progress(manifest, 1, now=updated_at + timedelta(seconds=later))["eta_seconds"]
+        assert eta == MIN_RUNNING_ETA_SECONDS
+    assert MIN_RUNNING_ETA_SECONDS > 0
+
+    # Just before the floor, the countdown is untouched.
+    assert progress(manifest, 1, now=updated_at + timedelta(seconds=40))["eta_seconds"] == pytest.approx(5.0)
+
+
+def test_a_running_eta_never_reaches_zero_at_any_chunk_or_without_updated_at():
+    late = T0 + timedelta(hours=1)
+    stamped = _manifest()
+    stamped["updated_at"] = (T0 + timedelta(seconds=30)).isoformat()
+    for done in (1, 2):
+        assert progress(stamped, done, now=late)["eta_seconds"] == MIN_RUNNING_ETA_SECONDS
+    # Without updated_at, an estimate that is tiny (0.001 s of work for 60 s of audio) is floored too.
+    assert progress(_manifest(), 1, now=T0 + timedelta(milliseconds=1))["eta_seconds"] == MIN_RUNNING_ETA_SECONDS
+
+
+def test_a_running_eta_is_still_unknown_until_measurable():
+    stamped = _manifest()
+    stamped["updated_at"] = (T0 + timedelta(seconds=30)).isoformat()
+    late = T0 + timedelta(hours=1)
+    assert progress(stamped, 0, now=late)["eta_seconds"] is None
+    assert progress(_manifest(started_at=None), 1, now=late)["eta_seconds"] is None
+
+
+def test_eta_is_zero_only_when_every_chunk_is_done():
+    manifest = _manifest()
+    manifest["updated_at"] = (T0 + timedelta(seconds=30)).isoformat()
+    late = T0 + timedelta(hours=1)
+    assert progress(manifest, 3, now=late)["eta_seconds"] == 0.0
+    assert progress(manifest, 3, now=T0)["eta_seconds"] == 0.0
+    assert all(progress(manifest, done, now=late)["eta_seconds"] != 0.0 for done in (0, 1, 2))
+
+
+def test_eta_without_updated_at_uses_started_at():
+    """When updated_at is not set, fall back to started_at (old behavior)."""
+    manifest = _manifest()
+    # No updated_at, so progress uses started_at
+
+    # ETA calculation: 60s audio took 30s, 90s remain, so ETA = 45s
+    eta = progress(manifest, 1, now=T0 + timedelta(seconds=30))["eta_seconds"]
+    assert eta == pytest.approx(45.0)
