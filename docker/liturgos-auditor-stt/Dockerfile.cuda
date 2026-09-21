@@ -29,9 +29,12 @@ COPY pyproject.toml README.md ./
 COPY auditor_stt ./auditor_stt
 RUN pip3 install --no-cache-dir .
 
+RUN mkdir -p /data
+
 ENV AUDITOR_STT_PORT=8090 \
     AUDITOR_STT_DEVICE=auto \
-    AUDITOR_STT_DEFAULT_LANGUAGE=fi
+    AUDITOR_STT_DEFAULT_LANGUAGE=fi \
+    AUDITOR_STT_DATA_DIR=/data
 
 EXPOSE 8090
 
@@ -39,9 +42,10 @@ CMD ["auditor-stt", "serve"]
 
 # Build (local dev, from repo root — build context is the package source,
 # not this docker/ directory):
-#   docker build -t auditor-stt:cuda -f docker/auditor-stt/Dockerfile.cuda python-packages/auditor-stt
+#   docker build -t auditor-stt:cuda -f docker/liturgos-auditor-stt/Dockerfile.cuda python-packages/liturgos-auditor-stt
 # Run (requires NVIDIA Container Toolkit):
 #   docker run --rm --gpus all -p 8090:8090 -v auditor-stt-models:/models \
-#     -e AUDITOR_STT_MODEL_DIR=/models auditor-stt:cuda
+#     -e AUDITOR_STT_MODEL_DIR=/models -v auditor-stt-data:/data \
+#     -e AUDITOR_STT_DATA_DIR=/data auditor-stt:cuda
 # Verify GPU was actually used:
 #   curl http://localhost:8090/health   # device should read "cuda"

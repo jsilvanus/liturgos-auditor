@@ -1,1 +1,11 @@
 *.mp4
+
+# Python environments and caches
+.venv*/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+
+# Speaker voice data, datasets and trained models never belong in git
+/data/
+/models/

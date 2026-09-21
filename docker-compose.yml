@@ -11,9 +11,23 @@ services:
       AUDITOR_STT_MODEL_DIR: /models
       AUDITOR_STT_DEVICE: ${AUDITOR_STT_DEVICE:-cpu}
       AUDITOR_STT_DEFAULT_LANGUAGE: ${AUDITOR_STT_DEFAULT_LANGUAGE:-fi}
+      AUDITOR_STT_DATA_DIR: /data
+      AUDITOR_STT_JOB_TTL_HOURS: ${AUDITOR_STT_JOB_TTL_HOURS:-72}
+      AUDITOR_STT_MAX_UPLOAD_MB: ${AUDITOR_STT_MAX_UPLOAD_MB:-2048}
+      AUDITOR_STT_API_KEY: ${AUDITOR_STT_API_KEY:-}
+      # Promoted fine-tuned models live in the same volume as downloaded ones, so they survive restarts.
+      # Switching models at runtime (POST /model) additionally requires AUDITOR_STT_API_KEY to be set.
+      AUDITOR_STT_REGISTRY_DIR: /models/registry
+      AUDITOR_STT_ALLOWED_MODELS: ${AUDITOR_STT_ALLOWED_MODELS:-}
+      # To enable media root (read-only shared media directory), uncomment below:
+      # AUDITOR_STT_MEDIA_ROOT: /media
     volumes:
       - auditor-stt-models:/models
+      - auditor-stt-data:/data
+      # Uncomment below to mount a shared media directory (read-only):
+      # - ${AUDITOR_STT_MEDIA_HOST_DIR}:/media:ro
     restart: unless-stopped
 
 volumes:
   auditor-stt-models:
+  auditor-stt-data:

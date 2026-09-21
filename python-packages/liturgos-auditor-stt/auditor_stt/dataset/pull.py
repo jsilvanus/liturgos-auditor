@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .client import CrowdSourceVoiceClient
+from .normalize import normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,31 @@ MAX_DURATION_SECONDS = 30
 
 class UnsupportedCorpusTypeError(Exception):
     pass
+
+
+class ExportInconsistentError(Exception):
+    """The export and manifest responses do not describe the same recordings."""
+
+
+def _paired(export, manifest):
+    """True when export and manifest agree row for row.
+
+    crowd-source-voice names files by position within each response
+    (`0001.wav`, ...), so a recording crossing the validation threshold between
+    the two calls shifts every later name and would pair one recording's text
+    with another's audio. The manifest repeats each row's text, so compare it.
+    """
+    rows, files = export["recordings"], manifest["files"]
+    if len(rows) != len(files):
+        return False
+    by_name = {entry["export_name"]: entry for entry in files}
+    for row in rows:
+        entry = by_name.get(row["file"])
+        if entry is None:
+            return False
+        if "text" in entry and normalize_text(entry["text"]) != normalize_text(row.get("text")):
+            return False
+    return True
 
 
 def pull_snapshot(base_url, corpus_id, out_dir, token_env="CSV_ADMIN_TOKEN", client=None):
@@ -45,6 +71,17 @@ def pull_snapshot(base_url, corpus_id, out_dir, token_env="CSV_ADMIN_TOKEN", cli
 
         manifest = client.get_manifest(corpus_id)
 
+        if not _paired(export, manifest):
+            logger.warning("Export and manifest disagree (data changed between calls?); refetching once")
+            export = client.get_export(corpus_id)
+            corpus = export["corpus"]
+            manifest = client.get_manifest(corpus_id)
+            if not _paired(export, manifest):
+                raise ExportInconsistentError(
+                    f"Export and manifest for corpus {corpus_id} still disagree after a refetch; "
+                    "refusing to pair text with audio by position. Try again when no validation is in progress."
+                )
+
         out = Path(out_dir)
         audio_dir = out / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
@@ -61,10 +98,7 @@ def pull_snapshot(base_url, corpus_id, out_dir, token_env="CSV_ADMIN_TOKEN", cli
                 logger.warning("Skipping %s: duration %.2fs outside [%s, %s]", row["file"], duration, MIN_DURATION_SECONDS, MAX_DURATION_SECONDS)
                 continue
 
-            manifest_row = manifest_by_name.get(row["file"])
-            if manifest_row is None:
-                logger.warning("Skipping %s: not present in manifest", row["file"])
-                continue
+            manifest_row = manifest_by_name[row["file"]]  # presence guaranteed by _paired()
 
             audio_bytes = client.download_audio(manifest_row["source_path"])
             (audio_dir / row["file"]).write_bytes(audio_bytes)
@@ -80,7 +114,7 @@ def pull_snapshot(base_url, corpus_id, out_dir, token_env="CSV_ADMIN_TOKEN", cli
             })
             total_duration += duration
 
-        (out / "recordings.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2))
+        (out / "recordings.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
 
         snapshot = {
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -92,7 +126,7 @@ def pull_snapshot(base_url, corpus_id, out_dir, token_env="CSV_ADMIN_TOKEN", cli
             "content_hash": hasher.hexdigest(),
             "has_speaker_id": any(r["speaker_id"] for r in rows),
         }
-        (out / "snapshot.json").write_text(json.dumps(snapshot, ensure_ascii=False, indent=2))
+        (out / "snapshot.json").write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info("Pulled snapshot: %s", snapshot)
         return snapshot
     finally:

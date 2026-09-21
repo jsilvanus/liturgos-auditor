@@ -1,0 +1,61 @@
+# auditor-stt — GPU training image (CUDA)
+#
+# Whisper fine-tuning pipeline with PyTorch CUDA 12.8.
+# REQUIRES the NVIDIA Container Toolkit and --gpus all at runtime.
+#
+# The CUDA runtime libraries are bundled inside the torch wheels — the base image
+# (python:3.12-slim) does not need cuda-runtime installed separately.
+#
+# Base model weights and training data are NOT baked into the image — they download on demand
+# into HF_HOME (/hf, mount a volume) and AUDITOR_STT_TRAIN_DATA_DIR (/data, mount a volume).
+
+FROM python:3.12-slim
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN set -eux \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+       ffmpeg \
+       ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install PyTorch CUDA 12.8 from the PyTorch index.
+# Keep --extra-index-url https://pypi.org/simple so dependency resolution still works for non-torch packages.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
+
+# CTranslate2 (faster-whisper; used by `auditor-stt eval` and the gate) dlopens libcublas.so.12 at runtime.
+# Because of --extra-index-url pip takes the newest torch across both indexes, and the cu128 index stops at
+# torch 2.11, so this currently installs PyPI's CUDA 13 build (libcublas.so.13) — which does not satisfy that
+# lookup; without the next step GPU evaluation dies with "Library libcublas.so.12 is not found".
+# The cu12 wheel lives in nvidia/cublas/lib (torch's CUDA 13 libs are in nvidia/cu13, other sonames), so the two
+# coexist; register the directory with the dynamic loader (path resolved from python, not hard-coded).
+# CTranslate2 4.8 does not use cuDNN, so torch keeps its own.
+RUN set -eux \
+  && pip install --no-cache-dir nvidia-cublas-cu12 \
+  && echo "$(python -c 'import site; print(site.getsitepackages()[0])')/nvidia/cublas/lib" > /etc/ld.so.conf.d/nvidia-cublas-cu12.conf \
+  && ldconfig
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY auditor_stt ./auditor_stt
+
+# Install the package with the [training] extra.
+# torch is already present, so pip will reuse it.
+RUN pip install --no-cache-dir ".[training]"
+
+RUN mkdir -p /data /models /hf
+
+ENV HF_HOME=/hf \
+    AUDITOR_STT_TRAIN_DATA_DIR=/data
+
+ENTRYPOINT ["auditor-stt"]
+
+# Build (from repo root — build context is python-packages/liturgos-auditor-stt):
+#   docker build -t auditor-train:cuda -f docker/liturgos-auditor-train/Dockerfile.cuda python-packages/liturgos-auditor-stt
+#
+# Run (requires NVIDIA Container Toolkit and --gpus all):
+#   docker run --rm --gpus all -v <host data dir>:/data -v <host models dir>:/models -v auditor-hf:/hf \
+#     -e CSV_ADMIN_TOKEN auditor-train:cuda dataset sync --base-url <url> --corpus-id <id>
+#   docker run --rm --gpus all -v <host data dir>:/data -v <host models dir>:/models -v auditor-hf:/hf \
+#     auditor-train:cuda train --dataset /models/<version> --out /models/run --peft lora --gradient-checkpointing

@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from auditor_stt.dataset.client import CrowdSourceVoiceClient
-from auditor_stt.dataset.pull import UnsupportedCorpusTypeError, pull_snapshot
+from auditor_stt.dataset.pull import ExportInconsistentError, UnsupportedCorpusTypeError, pull_snapshot
 
 EXPORT_URL = "https://csv.example.org/api/export"
 MANIFEST_URL = "https://csv.example.org/api/export/manifest"
@@ -56,11 +56,13 @@ def test_pull_snapshot_happy_path(tmp_path):
     assert snapshot["has_speaker_id"] is True
     assert snapshot["total_duration_seconds"] == pytest.approx(5.5)
 
-    recordings = json.loads((tmp_path / "recordings.json").read_text())
+    recordings = json.loads((tmp_path / "recordings.json").read_text(encoding="utf-8"))
     assert {r["file"] for r in recordings} == {"0001.wav", "0002.wav"}
+    # Finnish text must survive on disk regardless of the OS locale encoding.
+    assert {r["text"] for r in recordings} == {"moi maailma", "hyvää huomenta"}
     assert (tmp_path / "audio" / "0001.wav").read_bytes() == b"fake-audio-bytes"
 
-    on_disk_snapshot = json.loads((tmp_path / "snapshot.json").read_text())
+    on_disk_snapshot = json.loads((tmp_path / "snapshot.json").read_text(encoding="utf-8"))
     assert on_disk_snapshot == snapshot
 
 
@@ -103,8 +105,61 @@ def test_pull_snapshot_skips_rows_outside_duration_gate(tmp_path):
     snapshot = pull_snapshot(base_url="https://csv.example.org", corpus_id=3, out_dir=tmp_path, client=client)
 
     assert snapshot["recording_count"] == 1
-    recordings = json.loads((tmp_path / "recordings.json").read_text())
+    recordings = json.loads((tmp_path / "recordings.json").read_text(encoding="utf-8"))
     assert [r["file"] for r in recordings] == ["0001.wav"]
+
+
+def _shifted_manifest():
+    # Same positional names, but the recording behind 0001.wav is a different one:
+    # what csv returns if a recording crossed the validation threshold between the two calls.
+    return _manifest_payload(files=[
+        {"id": 7, "source_path": "uploads/audio/other.wav", "export_name": "0001.wav", "text": "aivan eri lause"},
+        {"id": 2, "source_path": "uploads/audio/b.wav", "export_name": "0002.wav", "text": "hyvää huomenta"},
+    ])
+
+
+def test_pull_snapshot_refetches_once_when_manifest_disagrees_with_export(tmp_path):
+    export = _export_payload()
+    good_manifest = _manifest_payload()
+    manifest_calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/export":
+            return httpx.Response(200, json=export)
+        if request.url.path == "/api/export/manifest":
+            manifest_calls.append(1)
+            return httpx.Response(200, json=_shifted_manifest() if len(manifest_calls) == 1 else good_manifest)
+        if request.url.path.startswith("/uploads/audio/"):
+            return httpx.Response(200, content=request.url.path.encode())
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = _make_client(handler)
+    snapshot = pull_snapshot(base_url="https://csv.example.org", corpus_id=3, out_dir=tmp_path, client=client)
+
+    assert len(manifest_calls) == 2
+    assert snapshot["recording_count"] == 2
+    # 0001.wav must hold the audio of the recording whose text it carries.
+    assert (tmp_path / "audio" / "0001.wav").read_bytes() == b"/uploads/audio/a.wav"
+
+
+def test_pull_snapshot_aborts_when_export_and_manifest_keep_disagreeing(tmp_path):
+    export = _export_payload()
+    calls = {"export": 0, "manifest": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/export":
+            calls["export"] += 1
+            return httpx.Response(200, json=export)
+        if request.url.path == "/api/export/manifest":
+            calls["manifest"] += 1
+            return httpx.Response(200, json=_shifted_manifest())
+        raise AssertionError(f"no audio may be downloaded from an inconsistent export: {request.url}")
+
+    client = _make_client(handler)
+    with pytest.raises(ExportInconsistentError):
+        pull_snapshot(base_url="https://csv.example.org", corpus_id=3, out_dir=tmp_path, client=client)
+
+    assert calls == {"export": 2, "manifest": 2}
 
 
 def test_pull_snapshot_missing_speaker_id_is_recorded(tmp_path):
