@@ -24,12 +24,13 @@ COPY pyproject.toml README.md ./
 COPY auditor_stt ./auditor_stt
 RUN pip install --no-cache-dir .
 
-RUN mkdir -p /data
+RUN mkdir -p /data /models
 
 ENV AUDITOR_STT_PORT=8090 \
     AUDITOR_STT_DEVICE=cpu \
     AUDITOR_STT_DEFAULT_LANGUAGE=fi \
-    AUDITOR_STT_DATA_DIR=/data
+    AUDITOR_STT_DATA_DIR=/data \
+    AUDITOR_STT_REGISTRY_DIR=/models/registry
 
 EXPOSE 8090
 

@@ -9,3 +9,10 @@ __pycache__/
 # Speaker voice data, datasets and trained models never belong in git
 /data/
 /models/
+python-packages/*/data/
+python-packages/*/models/
+*.sqlite
+*.wav
+*.ogg
+*.webm
+*.m4a

@@ -60,6 +60,7 @@ Set them with `-e` on `docker run`. For `docker compose`, only the variables lis
 | `AUDITOR_STT_MAX_QUEUE` | `8` | — | not passed | Live requests allowed in the queue before a new one is rejected with 503 |
 | `AUDITOR_STT_DATA_DIR` | none (jobs off) | `/data` | `/data` | Job storage; when unset `/v1/jobs` answers 503 |
 | `AUDITOR_STT_MAX_UPLOAD_MB` | `2048` | — | `${AUDITOR_STT_MAX_UPLOAD_MB:-2048}` | Size cap for uploads to `POST /v1/jobs` (1 MB = 1024 x 1024 bytes) |
+| `AUDITOR_STT_MAX_LIVE_UPLOAD_MB` | `64` | — | not passed | Size cap for uploads to live routes: `POST /inference` and `POST /v1/audio/transcriptions` |
 | `AUDITOR_STT_JOB_TTL_HOURS` | `72` | — | `${AUDITOR_STT_JOB_TTL_HOURS:-72}` | How long finished jobs and their results are kept |
 | `AUDITOR_STT_MEDIA_ROOT` | none | — | commented out | Directory `source_path` submissions must be inside; unset means `source_path` is rejected with 422 |
 | `AUDITOR_STT_CARRY_CONTEXT_CHARS` | `200` | — | not passed | Batch jobs: characters of the previous chunk's text carried into the next chunk's prompt (`0` turns it off) |
@@ -157,7 +158,11 @@ curl http://localhost:8090/health
 - **200 OK**: the model is loaded. Body: `{"status": "ok", "model_id": ..., "device": ..., "compute_type": ..., "loaded": true}`.
 - **503 Service Unavailable**: the model is loading or failed to load. Same body with `"status": "loading"` and `"loaded": false`.
 
-Neither the Dockerfiles nor `docker-compose.yml` define a health check, and the images do not install `curl`, so run the check from the host (or add your own health check to the compose file).
+`docker-compose.yml` defines a health check that uses Python's `urllib` to avoid requiring `curl`. The container initially reports `unhealthy` while the model is downloading and loading; the `start_period: 300s` allows sufficient time for the largest models (300 seconds is generous for most cases). Once the model is loaded, the service becomes `healthy`. You can check the status with:
+
+```bash
+docker inspect --format "{{.State.Health.Status}}" <container-id>
+```
 
 ## Storage and cleanup
 

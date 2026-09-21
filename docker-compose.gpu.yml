@@ -1,0 +1,27 @@
+# auditor-stt GPU override configuration
+# Use this file with the base docker-compose.yml to run the service on a GPU.
+#
+# Requirements:
+# - NVIDIA Container Toolkit must be installed on the host
+# - Docker must be able to access the GPU (verify with: docker run --rm --gpus all nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04 nvidia-smi)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#   # With custom host port:
+#   AUDITOR_STT_HOST_PORT=8097 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#   # With custom model:
+#   AUDITOR_STT_MODEL=base docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+
+services:
+  auditor-stt:
+    build:
+      dockerfile: ../../docker/liturgos-auditor-stt/Dockerfile.cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      AUDITOR_STT_DEVICE: ${AUDITOR_STT_DEVICE:-auto}

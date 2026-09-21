@@ -11,6 +11,7 @@
 FROM python:3.12-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG GIT_COMMIT=
 
 RUN set -eux \
   && apt-get update \
@@ -33,12 +34,15 @@ RUN pip install --no-cache-dir ".[training]"
 RUN mkdir -p /data /models /hf
 
 ENV HF_HOME=/hf \
-    AUDITOR_STT_TRAIN_DATA_DIR=/data
+    AUDITOR_STT_TRAIN_DATA_DIR=/data \
+    AUDITOR_STT_GIT_COMMIT=$GIT_COMMIT \
+    AUDITOR_STT_REGISTRY_DIR=/models/registry
 
 ENTRYPOINT ["auditor-stt"]
 
 # Build (from repo root — build context is python-packages/liturgos-auditor-stt):
-#   docker build -t auditor-train:cpu -f docker/liturgos-auditor-train/Dockerfile python-packages/liturgos-auditor-stt
+#   docker build -t auditor-train:cpu -f docker/liturgos-auditor-train/Dockerfile \
+#     --build-arg GIT_COMMIT=$(git rev-parse HEAD) python-packages/liturgos-auditor-stt
 #
 # Run examples (mount data dir, models dir, and HuggingFace cache volume):
 #   docker run --rm -v <host data dir>:/data -v <host models dir>:/models -v auditor-hf:/hf \

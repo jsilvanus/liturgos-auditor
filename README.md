@@ -53,7 +53,17 @@ Start the service with default settings (builds the CPU image; `AUDITOR_STT_DEVI
 docker compose up
 ```
 
-The service listens on `http://localhost:8090`.
+The service listens on `http://localhost:8090` (or the port specified by `AUDITOR_STT_HOST_PORT`):
+
+```bash
+AUDITOR_STT_HOST_PORT=8097 docker compose up
+```
+
+To use a GPU (requires NVIDIA Container Toolkit):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+```
 
 Test:
 
@@ -120,7 +130,7 @@ Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` a
 |----------|---------|-------|
 | `AUDITOR_STT_MODEL` | `large-v3-turbo` | faster-whisper model alias, path, or `registry:<name>[@<version>]` |
 | `AUDITOR_STT_MODEL_DIR` | (none) | Download/cache directory for models; when unset faster-whisper uses its own default cache. Use a persistent volume |
-| `AUDITOR_STT_DEVICE` | `auto` | `cpu`, `cuda` or `auto`. `auto` tries CUDA (float16) first and falls back to CPU (int8); `cuda` and `cpu` do not fall back |
+| `AUDITOR_STT_DEVICE` | `auto` | `cpu`, `cuda` or `auto`. `auto` tries CUDA (float16) first and falls back to CPU (int8) on any failure including missing CUDA runtime libraries; `cuda` and `cpu` do not fall back |
 | `AUDITOR_STT_COMPUTE_TYPE` | (none) | faster-whisper compute type (`float16`, `int8`, `int8_float16`, ...). When unset: `float16` on CUDA, `int8` on CPU |
 | `AUDITOR_STT_DEFAULT_LANGUAGE` | `fi` | Language used when a request does not send `language` |
 | `AUDITOR_STT_PORT` | `8090` | Listen port. Read only by `auditor-stt serve` (default of `--port`) |
@@ -128,7 +138,8 @@ Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` a
 | `AUDITOR_STT_MAX_QUEUE` | `8` | Live requests allowed in the queue (the running one plus waiting ones) before a new live request is rejected with 503. Batch chunks are not counted and never rejected |
 | `AUDITOR_STT_DATA_DIR` | (none) | Job storage (`<dir>/jobs`). Unset: `/v1/jobs` answers 503. `auditor-stt serve` defaults it to `./data`; the Docker images set `/data` |
 | `AUDITOR_STT_MEDIA_ROOT` | (none) | Directory that `source_path` submissions must point into. Unset: `source_path` is rejected with 422 |
-| `AUDITOR_STT_MAX_UPLOAD_MB` | `2048` | Size cap (1 MB = 1024 x 1024 bytes) for uploads to `POST /v1/jobs`. Not applied to the live routes |
+| `AUDITOR_STT_MAX_UPLOAD_MB` | `2048` | Size cap (1 MB = 1024 x 1024 bytes) for uploads to `POST /v1/jobs` |
+| `AUDITOR_STT_MAX_LIVE_UPLOAD_MB` | `64` | Size cap for uploads to `POST /inference` and `POST /v1/audio/transcriptions` (live routes) |
 | `AUDITOR_STT_JOB_TTL_HOURS` | `72` | How long a finished job (completed, failed or cancelled) and its result are kept before they are purged (checked at startup and hourly) |
 | `AUDITOR_STT_CARRY_CONTEXT_CHARS` | `200` | Batch jobs: how many characters of the previous chunk's text are passed as prompt context to the next chunk; `0` turns it off |
 | `AUDITOR_STT_BATCH_VAD` | `true` | Batch jobs: VAD filter inside each chunk. `0`, `false`, `no`, `off` or empty disable it |
@@ -165,6 +176,8 @@ cd python-packages/liturgos-auditor-stt
 pip install -e ".[dev]"
 pytest -v
 ```
+
+**Windows: path length**: Downloading a model into a deeply nested `AUDITOR_STT_MODEL_DIR` can fail on Windows because of the 260-character path limit. Hugging Face blob names are long, and deeply nested directories can cause paths to exceed this limit. Use a short directory such as `C:\models` or enable long paths via the Windows registry (see Microsoft documentation). If model download fails with a path error, check `/health` in the logs for the full error.
 
 The slow end-to-end training smoke test (needs the `training` extra and downloads `openai/whisper-tiny`) is skipped unless enabled:
 

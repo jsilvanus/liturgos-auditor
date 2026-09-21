@@ -12,13 +12,15 @@ From the repo root, with build context `python-packages/liturgos-auditor-stt`:
 
 ```bash
 # CPU variant (suitable for most development; no NVIDIA toolkit needed)
-docker build -t auditor-train:cpu -f docker/liturgos-auditor-train/Dockerfile python-packages/liturgos-auditor-stt
+docker build -t auditor-train:cpu -f docker/liturgos-auditor-train/Dockerfile \
+  --build-arg GIT_COMMIT=$(git rev-parse HEAD) python-packages/liturgos-auditor-stt
 
 # GPU variant (CUDA 12.8; requires NVIDIA Container Toolkit)
-docker build -t auditor-train:cuda -f docker/liturgos-auditor-train/Dockerfile.cuda python-packages/liturgos-auditor-stt
+docker build -t auditor-train:cuda -f docker/liturgos-auditor-train/Dockerfile.cuda \
+  --build-arg GIT_COMMIT=$(git rev-parse HEAD) python-packages/liturgos-auditor-stt
 ```
 
-The images contain the code and its dependencies only: no recordings, no model weights. There is no git checkout in the image, so `training_metadata.json` records `"git_commit": null`; tag the image yourself and note the tag with each run.
+The images contain the code and its dependencies only: no recordings, no model weights. Pass `--build-arg GIT_COMMIT=$(git rev-parse HEAD)` to record the git commit in `training_metadata.json`; without it, it is recorded as null. Tag the image yourself and note the tag with each run.
 
 ## Run
 

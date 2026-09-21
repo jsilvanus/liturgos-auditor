@@ -63,7 +63,7 @@ Rows of `{corpus_id, corpus_name, type, total_recordings, exportable_recordings,
 | Corpus type | Must be `text`; otherwise `Corpus N ... is type 'music'` and no change |
 | Text | Normalised (NFC, literal `\n` and line breaks to spaces, whitespace collapsed); an empty text is skipped (`empty_text`) |
 | Audio | Downloaded from `audio_url` (falling back to `original_path`), converted with ffmpeg to 16 kHz mono PCM16 WAV |
-| Length | 0.5 to 30 s, measured on the converted audio. csv's own `duration` is client-supplied and never used for this. csv's README allows recordings up to 120 s, so longer ones are skipped (`duration_out_of_range`) |
+| Length | 0.5 to 30 s, measured on the converted audio. csv's own `duration` is client-supplied and never used for this. csv's README allows recordings up to 120 s, so longer ones are skipped (`duration_out_of_range`). A rejected recording is remembered in the ledger's `rejected` table (id, reason, audio path only) and not downloaded again on later syncs until its audio path changes or it leaves the export |
 | Speaker | Section 3 |
 | Language | The corpus's `language` field is not used; the training language is a flag of `train` (default `fi`) |
 | Identity | `recording_id`. A recording missing from a later export is treated as deleted (there are no tombstones or deleted-id lists in csv) |

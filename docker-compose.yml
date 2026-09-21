@@ -4,7 +4,13 @@ services:
       context: ./python-packages/liturgos-auditor-stt
       dockerfile: ../../docker/liturgos-auditor-stt/Dockerfile
     ports:
-      - "8090:8090"
+      - "${AUDITOR_STT_HOST_PORT:-8090}:8090"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
     environment:
       # Use faster-whisper's built-in model alias so the model source stays valid.
       AUDITOR_STT_MODEL: ${AUDITOR_STT_MODEL:-large-v3-turbo}
@@ -19,6 +25,10 @@ services:
       # Switching models at runtime (POST /model) additionally requires AUDITOR_STT_API_KEY to be set.
       AUDITOR_STT_REGISTRY_DIR: /models/registry
       AUDITOR_STT_ALLOWED_MODELS: ${AUDITOR_STT_ALLOWED_MODELS:-}
+      AUDITOR_STT_MAX_QUEUE: ${AUDITOR_STT_MAX_QUEUE:-8}
+      AUDITOR_STT_CARRY_CONTEXT_CHARS: ${AUDITOR_STT_CARRY_CONTEXT_CHARS:-200}
+      AUDITOR_STT_BATCH_VAD: ${AUDITOR_STT_BATCH_VAD:-1}
+      AUDITOR_STT_MAX_LIVE_UPLOAD_MB: ${AUDITOR_STT_MAX_LIVE_UPLOAD_MB:-64}
       # To enable media root (read-only shared media directory), uncomment below:
       # AUDITOR_STT_MEDIA_ROOT: /media
     volumes:

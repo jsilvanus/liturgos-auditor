@@ -16,7 +16,7 @@ Optional extras (from `pyproject.toml`):
 
 - `dev`: pytest, pytest-asyncio, pytest-cov and `datasets`, for running the tests
 - `dataset`: `datasets`, for `dataset build`
-- `training`: `datasets`, torch, transformers, accelerate, peft, jiwer, for model training
+- `training`: `datasets`, torch, transformers, accelerate, peft, for model training
 
 ```bash
 pip install -e ".[dev]"
