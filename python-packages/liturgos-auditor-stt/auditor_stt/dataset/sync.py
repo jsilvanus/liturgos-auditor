@@ -5,6 +5,10 @@ diffs the validated export against the ledger: only new recordings are
 downloaded, changed text is updated in place, and a recording that disappears
 upstream is tombstoned and its audio erased (csv hard-deletes without
 notifying anyone, so absence from the listing is the only deletion signal).
+A recording whose audio is rejected for good (length outside the training
+range, or unconvertible) is noted in the ledger's `rejected` table and is not
+downloaded again until its audio path changes or it leaves the listing; a
+failed download is transient and is never noted.
 
 Run one sync at a time per data directory.
 
@@ -22,7 +26,14 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from .audio import AudioNormalizeError, audio_path, normalize_audio, store_audio, wav_duration
+from .audio import (
+    AudioNormalizeError,
+    AudioNormalizeTimeout,
+    audio_path,
+    normalize_audio,
+    store_audio,
+    wav_duration,
+)
 from .client import CrowdSourceVoiceClient
 from .ledger import Ledger, ledger_path, text_hash, utc_iso
 from .normalize import normalize_text
@@ -201,6 +212,12 @@ def sync_corpus(
     listing is missing most of the ledger's rows and `allow_mass_removal` is
     not set. One recording that fails to download or convert is counted in
     `skipped` and never aborts the run or tombstones anything.
+
+    A recording rejected by the duration gate or by conversion is written to
+    the ledger's `rejected` table. While the listing still gives the same
+    audio path it is skipped without a request (`previously_rejected`); a new
+    path is tried like a new recording. Rejected rows never count towards the
+    mass-removal guard, and those whose id left the listing are deleted.
     """
     normalizer = normalizer or normalize_audio
     now = utc_iso(now)
@@ -231,6 +248,8 @@ def sync_corpus(
         if not ledger.audio_hash_in_use(sha, exclude_ids=gone):
             _delete_audio(data_dir, sha)
     report.removed = ledger.mark_removed(gone, now)
+    # A rejection only saves a download while csv still lists the recording.
+    ledger.clear_rejected(set(ledger.rejected_ids(corpus_id)) - listed_ids)
 
     ledger.mark_seen(listed_ids, now)
 
@@ -268,6 +287,10 @@ def sync_corpus(
         if not entry.audio_path:
             report.skip("missing_audio_path")
             continue
+        rejected = ledger.rejected(rid)
+        if rejected and rejected["audio_path"] == entry.audio_path:
+            report.skip("previously_rejected")
+            continue
         try:
             raw = client.download_audio(entry.audio_path)
         except httpx.HTTPError as exc:
@@ -278,14 +301,21 @@ def sync_corpus(
         try:
             wav = normalizer(raw, entry.audio_path)
             duration = wav_duration(wav)
+        except AudioNormalizeTimeout:
+            # Transient, like a failed download: not remembered, so the next sync tries again.
+            logger.warning("Converting recording %s timed out", rid)
+            report.skip("audio_timeout")
+            continue
         except AudioNormalizeError as exc:
             logger.warning("Could not convert recording %s: %s", rid, exc)
             report.skip("audio_undecodable")
+            ledger.reject(rid, corpus_id, "audio_undecodable", entry.audio_path, now)
             continue
         # csv's own duration field is client-supplied and never checked server-side; trust only the audio.
         if not (MIN_DURATION_SECONDS <= duration <= MAX_DURATION_SECONDS):
             logger.warning("Skipping recording %s: duration %.2fs outside [%s, %s]", rid, duration, MIN_DURATION_SECONDS, MAX_DURATION_SECONDS)
             report.skip("duration_out_of_range")
+            ledger.reject(rid, corpus_id, "duration_out_of_range", entry.audio_path, now)
             continue
 
         sha = hashlib.sha256(wav).hexdigest()

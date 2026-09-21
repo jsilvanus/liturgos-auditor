@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from auditor_stt.cli import main
-from auditor_stt.dataset.audio import AudioNormalizeError, audio_path, normalize_audio
+from auditor_stt.dataset.audio import AudioNormalizeError, AudioNormalizeTimeout, audio_path, normalize_audio
 from auditor_stt.dataset.client import CrowdSourceVoiceClient
 from auditor_stt.dataset.ledger import Ledger, ledger_path
 from auditor_stt.dataset.pull import ExportInconsistentError, UnsupportedCorpusTypeError
@@ -591,6 +591,204 @@ def test_recordings_without_text_are_skipped(fake, ledger, data_dir):
     assert fake.downloads() == ["/uploads/audio/2.wav"]
 
 
+# --- rejected recordings ----------------------------------------------------
+
+
+def test_a_rejected_recording_is_not_downloaded_again(fake, ledger, data_dir):
+    fake.add(1, seconds=45.0)  # too long
+    fake.add(2, seconds=0.2)   # too short
+    fake.add(3, seconds=3.0)
+    report = sync(fake, ledger, data_dir, now=T0)
+
+    assert counts(report) == (1, 0, 0, 0)
+    assert report.skipped == {"duration_out_of_range": 2}
+    assert sorted(fake.downloads()) == [f"/uploads/audio/{rid}.wav" for rid in (1, 2, 3)]
+    assert ledger.rejected(1) == {
+        "recording_id": 1, "corpus_id": 3, "reason": "duration_out_of_range",
+        "audio_path": "uploads/audio/1.wav", "first_seen": T0,
+    }
+    assert ledger.rejected_ids() == [1, 2]
+
+    fake.requests.clear()
+    report = sync(fake, ledger, data_dir, now=T1)
+
+    assert fake.downloads() == []
+    assert counts(report) == (0, 0, 0, 1)
+    assert report.skipped == {"previously_rejected": 2}
+    assert "previously_rejected=2" in str(report)
+    assert ledger.rejected(1)["first_seen"] == T0
+    assert ledger.get(1) is None  # a rejection is never a ledger row, let alone a tombstone
+
+
+def test_unconvertible_audio_is_rejected_once_and_not_converted_again(fake, ledger, data_dir):
+    fake.add(1)
+    fake.add(2, seconds=3.0)
+    converted = []
+
+    def normalizer(data, source_name):
+        converted.append(source_name)
+        if source_name.endswith("/1.wav"):
+            raise AudioNormalizeError("ffmpeg exited with 1")
+        return data
+
+    sync(fake, ledger, data_dir, normalizer=normalizer, now=T0)
+    assert ledger.rejected(1)["reason"] == "audio_undecodable"
+    fake.requests.clear()
+    converted.clear()
+
+    report = sync(fake, ledger, data_dir, normalizer=normalizer, now=T1)
+
+    assert fake.downloads() == [] and converted == []
+    assert report.skipped == {"previously_rejected": 1}
+
+
+def test_a_rejected_recording_with_a_new_audio_path_is_tried_again_and_updated(fake, ledger, data_dir):
+    fake.add(1, seconds=45.0)
+    sync(fake, ledger, data_dir, now=T0)
+    fake.requests.clear()
+
+    fake.recordings[1]["path"] = "uploads/audio/1-again.wav"  # re-recorded, but still too long
+    report = sync(fake, ledger, data_dir, now=T1)
+
+    assert fake.downloads() == ["/uploads/audio/1-again.wav"]
+    assert report.skipped == {"duration_out_of_range": 1}
+    assert ledger.rejected(1) == {
+        "recording_id": 1, "corpus_id": 3, "reason": "duration_out_of_range",
+        "audio_path": "uploads/audio/1-again.wav", "first_seen": T0,
+    }
+
+    fake.requests.clear()
+    report = sync(fake, ledger, data_dir, now="2026-03-01T00:00:00Z")
+
+    assert fake.downloads() == []
+    assert report.skipped == {"previously_rejected": 1}
+
+
+def test_a_rejected_recording_that_later_succeeds_leaves_the_table(fake, ledger, data_dir):
+    fake.add(1, seconds=45.0)
+    sync(fake, ledger, data_dir, now=T0)
+    assert ledger.rejected(1) is not None
+
+    fake.recordings[1]["path"] = "uploads/audio/1-cut.wav"
+    fake.recordings[1]["audio"] = make_wav(3.0, seed=77)
+    report = sync(fake, ledger, data_dir, now=T1)
+
+    assert counts(report) == (1, 0, 0, 0)
+    assert report.skipped == {}
+    assert ledger.rejected(1) is None
+    assert ledger.rejected_count() == 0
+    row = ledger.get(1)
+    assert (row["status"], row["audio_path"], row["first_seen"]) == ("active", "uploads/audio/1-cut.wav", T1)
+
+
+def test_an_active_recording_whose_new_audio_is_rejected_keeps_its_row_and_is_not_refetched(fake, ledger, data_dir):
+    fake.add(1)
+    sync(fake, ledger, data_dir, now=T0)
+    before = ledger.get(1)
+
+    fake.recordings[1]["path"] = "uploads/audio/1-long.wav"
+    fake.recordings[1]["audio"] = make_wav(45.0, seed=5)
+    report = sync(fake, ledger, data_dir, now=T1)
+
+    assert counts(report) == (0, 0, 0, 0)
+    assert report.skipped == {"duration_out_of_range": 1}
+    assert {k: v for k, v in ledger.get(1).items() if k != "last_seen"} == {k: v for k, v in before.items() if k != "last_seen"}
+    assert audio_path(data_dir, before["audio_sha256"]).exists()
+
+    fake.requests.clear()
+    report = sync(fake, ledger, data_dir, now="2026-03-01T00:00:00Z")
+
+    assert fake.downloads() == []
+    assert report.skipped == {"previously_rejected": 1}
+    assert ledger.get(1)["status"] == "active"
+
+
+def test_a_rejected_recording_that_vanishes_upstream_is_forgotten(fake, ledger, data_dir):
+    fake.add(1, seconds=45.0)
+    fake.add(2, seconds=3.0)
+    sync(fake, ledger, data_dir, now=T0)
+    ledger.reject(50, 4, "duration_out_of_range", "uploads/audio/50.wav")  # another corpus: not this sync's business
+
+    fake.remove(1)
+    report = sync(fake, ledger, data_dir, now=T1)
+
+    assert counts(report) == (0, 0, 0, 1)
+    assert ledger.rejected(1) is None
+    assert ledger.get(1) is None
+    assert ledger.rejected_ids() == [50]
+    assert ledger.counts() == {"active": 1, "removed": 0}
+
+
+def test_a_failed_download_is_transient_and_never_recorded_as_a_rejection(fake, ledger, data_dir):
+    fake.add(1, seconds=45.0)
+    fake.fail_audio.add(1)
+
+    report = sync(fake, ledger, data_dir, now=T0)
+
+    assert report.skipped == {"download_failed": 1}
+    assert ledger.rejected(1) is None
+    assert ledger.rejected_count() == 0
+
+    fake.fail_audio.clear()
+    report = sync(fake, ledger, data_dir, now=T1)  # the download now works, so the audio is judged for real
+
+    assert report.skipped == {"duration_out_of_range": 1}
+    assert ledger.rejected(1)["first_seen"] == T1
+
+
+def test_a_failed_download_of_a_changed_path_keeps_the_old_rejection(fake, ledger, data_dir):
+    fake.add(1, seconds=45.0)
+    sync(fake, ledger, data_dir, now=T0)
+
+    fake.recordings[1]["path"] = "uploads/audio/1-again.wav"
+    fake.fail_audio.add(1)
+    report = sync(fake, ledger, data_dir, now=T1)
+
+    assert report.skipped == {"download_failed": 1}
+    assert ledger.rejected(1)["audio_path"] == "uploads/audio/1.wav"
+
+
+def test_mass_removal_guard_does_not_count_rejected_recordings_as_removals(fake, ledger, data_dir):
+    for rid in range(1, 5):
+        fake.add(rid)
+    for rid in range(5, 15):
+        fake.add(rid, seconds=0.2)  # rejected
+    sync(fake, ledger, data_dir, now=T0)
+    assert ledger.rejected_count() == 10
+    for rid in range(5, 15):
+        fake.remove(rid)
+
+    report = sync(fake, ledger, data_dir, now=T1)  # 10 vanished ids, none of them an active row: no refusal
+
+    assert counts(report) == (0, 0, 0, 4)
+    assert ledger.counts() == {"active": 4, "removed": 0}
+    assert ledger.rejected_count() == 0
+
+
+def test_mass_removal_guard_ignores_rejected_rows_in_its_denominator_and_refuses_before_changing_anything(
+    fake, ledger, data_dir,
+):
+    for rid in range(1, 11):
+        fake.add(rid)
+    for rid in range(11, 31):
+        fake.add(rid, seconds=0.2)  # 20 rejected rows must not dilute the 10 active ones
+    sync(fake, ledger, data_dir, now=T0)
+    for rid in range(5, 11):
+        fake.remove(rid)  # 6 of 10 active rows
+    fake.remove(11)       # and one rejected one
+
+    with pytest.raises(MassRemovalError, match="6 of 10"):
+        sync(fake, ledger, data_dir, now=T1)
+    assert ledger.counts() == {"active": 10, "removed": 0}
+    assert ledger.rejected_count() == 20
+
+    report = sync(fake, ledger, data_dir, now=T1, allow_mass_removal=True)
+
+    assert report.removed == 6
+    assert ledger.rejected_count() == 19
+    assert ledger.counts() == {"active": 4, "removed": 6}
+
+
 # --- legacy pairing race ----------------------------------------------------
 
 
@@ -711,6 +909,15 @@ def test_report_summary_is_printable():
     assert str(SyncReport()) == "added 0, updated 0, removed 0, unchanged 0"
 
 
+def test_report_summary_names_previously_rejected_recordings():
+    report = SyncReport(unchanged=4)
+    report.skip("previously_rejected")
+    report.skip("previously_rejected")
+
+    assert report.skipped == {"previously_rejected": 2}
+    assert str(report) == "added 0, updated 0, removed 0, unchanged 4; skipped 2 (previously_rejected=2)"
+
+
 def test_cli_dataset_sync_passes_its_arguments_to_run_sync(monkeypatch, tmp_path, capsys):
     seen = {}
 
@@ -778,3 +985,28 @@ def test_cli_dataset_sync_requires_base_url_and_corpus_id():
         main(["dataset", "sync", "--base-url", BASE_URL])
 
     assert excinfo.value.code == 2
+
+
+def test_a_conversion_timeout_is_transient_and_not_remembered_as_a_rejection(fake, ledger, data_dir):
+    # An unreadable file is rejected for good; a timeout only means the machine was busy.
+    fake.add(1, seconds=2.0)
+    attempts = []
+
+    def slow_then_fast(data, source_name):
+        attempts.append(source_name)
+        if len(attempts) == 1:
+            raise AudioNormalizeTimeout("ffmpeg timed out")
+        return data
+
+    first = sync(fake, ledger, data_dir, normalizer=slow_then_fast, now=T0)
+
+    assert first.skipped == {"audio_timeout": 1}
+    assert counts(first) == (0, 0, 0, 0)
+    assert ledger.rejected(1) is None
+    assert ledger.get(1) is None
+
+    second = sync(fake, ledger, data_dir, normalizer=slow_then_fast, now=T1)
+
+    assert counts(second) == (1, 0, 0, 0)
+    assert len(attempts) == 2  # the second sync downloaded and converted it again
+    assert ledger.rejected(1) is None

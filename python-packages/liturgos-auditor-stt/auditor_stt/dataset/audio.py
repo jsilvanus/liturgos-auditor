@@ -23,6 +23,10 @@ class AudioNormalizeError(Exception):
     """This recording could not be converted; other recordings are unaffected."""
 
 
+class AudioNormalizeTimeout(AudioNormalizeError):
+    """Conversion did not finish in time. Unlike a bad file this is transient (a busy machine), so it is retried."""
+
+
 class FfmpegNotFoundError(RuntimeError):
     """ffmpeg is not installed, so no recording can be converted."""
 
@@ -60,7 +64,7 @@ def normalize_audio(data, source_name=None):
                 timeout=FFMPEG_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired as exc:
-            raise AudioNormalizeError("ffmpeg timed out") from exc
+            raise AudioNormalizeTimeout("ffmpeg timed out") from exc
         if proc.returncode != 0 or not os.path.exists(out):
             detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()[-1:] or ["no output"]
             raise AudioNormalizeError(f"ffmpeg exited with {proc.returncode}: {detail[0][:200]}")

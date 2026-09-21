@@ -102,21 +102,22 @@ def compute_split(rows, split_ratios=None, seed=42, *, key="file"):
     return assignment, all(len(splits) == 1 for splits in splits_of.values())
 
 
-def build_from_ledger(data_dir, *, out_root=None, corpus_id=None, seed=42, split_ratios=None, force=False):
+def build_from_ledger(data_dir, *, out_root=None, corpus_id=None, seed=42, split_ratios=None, force=False, max_drop_fraction=None):
     """Build a dataset from the active ledger rows (optionally one corpus) into `<out_root>/<version>`.
 
     `out_root` defaults to `<data_dir>/datasets`. Returns the build metadata.
     An already-built version is returned as is, unless `force`. Raises
     FileNotFoundError when there is no ledger or an active row has no audio
-    file (a sync fetches it again), ValueError when a split would be empty.
+    file (a sync fetches it again), ValueError when a split would be empty or
+    when max_drop_fraction is exceeded.
     """
     rows, corpus_ids = _ledger_rows(data_dir, corpus_id)
-    plan = _plan(rows, split_ratios, seed)
+    plan, leakage_metadata = _plan(rows, split_ratios, seed, max_drop_fraction=max_drop_fraction)
     out_dir = Path(out_root) if out_root is not None else datasets_root(data_dir)
-    return _materialise(plan, out_dir / plan.version, {"kind": "ledger", "corpus_ids": corpus_ids}, seed, force)
+    return _materialise(plan, out_dir / plan.version, {"kind": "ledger", "corpus_ids": corpus_ids}, seed, force, leakage_metadata)
 
 
-def build_dataset(snapshot_dir, out_dir, seed=42, split_ratios=None, force=False):
+def build_dataset(snapshot_dir, out_dir, seed=42, split_ratios=None, force=False, max_drop_fraction=None):
     """Build a dataset from a `dataset pull` snapshot (`recordings.json` + `audio/`) into `out_dir` itself.
 
     A snapshot has no recording ids or audio hashes, so the file name (e.g.
@@ -130,8 +131,8 @@ def build_dataset(snapshot_dir, out_dir, seed=42, split_ratios=None, force=False
     """
     snapshot_dir = Path(snapshot_dir)
     rows = _snapshot_rows(snapshot_dir)
-    plan = _plan(rows, split_ratios, seed)
-    return _materialise(plan, Path(out_dir), _snapshot_source(snapshot_dir), seed, force)
+    plan, leakage_metadata = _plan(rows, split_ratios, seed, max_drop_fraction=max_drop_fraction)
+    return _materialise(plan, Path(out_dir), _snapshot_source(snapshot_dir), seed, force, leakage_metadata)
 
 
 @dataclass
@@ -235,7 +236,7 @@ def _dataset_version(rows, ratios, salt):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def _plan(rows, split_ratios, seed):
+def _plan(rows, split_ratios, seed, max_drop_fraction=None):
     if not rows:
         raise ValueError("No recordings to build a dataset from")
     ratios = _validated_ratios(split_ratios)
@@ -245,6 +246,10 @@ def _plan(rows, split_ratios, seed):
 
     assignment, speaker_disjoint = compute_split(rows, ratios, seed, key="recording_id")
     eval_texts = {r["text_hash"] for r in rows if assignment[r["recording_id"]] != "train"}
+
+    # Count train rows before the leakage guard.
+    train_rows_before = sum(1 for r in rows if assignment[r["recording_id"]] == "train")
+
     kept, dropped = [], 0
     for row in rows:
         split = assignment[row["recording_id"]]
@@ -252,6 +257,15 @@ def _plan(rows, split_ratios, seed):
             dropped += 1
         else:
             kept.append({**row, "split": split})
+
+    # Compute drop fraction and check against max_drop_fraction.
+    drop_fraction = (dropped / train_rows_before) if train_rows_before > 0 else 0
+    if max_drop_fraction is not None and drop_fraction > max_drop_fraction:
+        raise ValueError(
+            f"Dropped {dropped} of {train_rows_before} train rows for transcript overlap ({drop_fraction:.1%} > "
+            f"max {max_drop_fraction:.1%}). This usually means the same prompts are read by many speakers; "
+            "use a corpus with more distinct prompts or build dev/test from held-out sentences instead."
+        )
 
     sizes = {name: sum(1 for r in kept if r["split"] == name) for name in SPLIT_NAMES}
     empty_splits = [name for name, count in sizes.items() if count == 0]
@@ -266,7 +280,29 @@ def _plan(rows, split_ratios, seed):
             "id only ever go to train, so dev/test need recordings from more identified speakers: use a larger "
             "snapshot or corpus, or wider dev/test ratios."
         )
-    return _Plan(version, salt, ratios, kept, dropped, speaker_disjoint)
+
+    # Warn if a large fraction was dropped.
+    if drop_fraction > 0.5:
+        logger.warning(
+            "Dropped %d of %d train rows (%.1f%%) for transcript overlap. This usually means the same prompts "
+            "are read by many speakers; consider building dev/test from held-out sentences instead.",
+            dropped, train_rows_before, drop_fraction * 100
+        )
+
+    # Compute speakers lost in training set.
+    speakers_before = {r["speaker_id"] for r in rows if assignment[r["recording_id"]] == "train" and r["speaker_id"]}
+    speakers_after = {r["speaker_id"] for r in kept if r["split"] == "train" and r["speaker_id"]}
+    speakers_lost = len(speakers_before - speakers_after)
+
+    # Compute distinct transcripts in training set after guard.
+    train_distinct_transcripts = len({r["text_hash"] for r in kept if r["split"] == "train"})
+
+    return _Plan(version, salt, ratios, kept, dropped, speaker_disjoint), {
+        "train_rows_before_leakage_guard": train_rows_before,
+        "train_dropped_fraction": drop_fraction,
+        "train_distinct_transcripts": train_distinct_transcripts,
+        "train_speakers_lost": speakers_lost,
+    }
 
 
 def _read_metadata(out_dir):
@@ -288,7 +324,7 @@ def _clear_output_dir(out_dir):
     shutil.rmtree(out_dir)
 
 
-def _materialise(plan, out_dir, source, seed, force):
+def _materialise(plan, out_dir, source, seed, force, leakage_metadata=None):
     existing = _read_metadata(out_dir)
     if existing is not None and existing.get("dataset_version") == plan.version and not force:
         logger.info("Dataset version %s is already built; nothing to do", plan.version)
@@ -357,6 +393,19 @@ def _materialise(plan, out_dir, source, seed, force):
         "train_rows_dropped_for_transcript_overlap": plan.dropped_for_overlap,
         "speaker_disjoint": plan.speaker_disjoint,
     }
+
+    # Add leakage guard metadata.
+    if leakage_metadata:
+        metadata.update(leakage_metadata)
+        # Add warnings list if drop fraction is high.
+        if leakage_metadata.get("train_dropped_fraction", 0) > 0.5:
+            metadata["warnings"] = [
+                f"Dropped {plan.dropped_for_overlap} train rows ({leakage_metadata['train_dropped_fraction']:.1%}) "
+                f"for transcript overlap; {leakage_metadata['train_speakers_lost']} speakers lost all their training rows. "
+                f"This usually means the same prompts are read by many speakers; consider building dev/test from "
+                f"held-out sentences instead."
+            ]
+
     (out_dir / BUILD_METADATA_FILENAME).write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
     )

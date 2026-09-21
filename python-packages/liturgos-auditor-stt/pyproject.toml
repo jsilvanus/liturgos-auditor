@@ -54,7 +54,6 @@ training = [
     "transformers>=4.45",
     "accelerate>=0.30",
     "peft>=0.10",
-    "jiwer>=3.0",
 ]
 
 [project.scripts]

@@ -61,14 +61,23 @@ def _dataset_build(args):
         if args.out is None or args.data_dir is not None or args.corpus_id is not None:
             print("error: --snapshot needs --out and cannot be combined with --data-dir or --corpus-id", file=sys.stderr)
             return 2
+
+    # Validate max_drop_fraction if provided.
+    max_drop_frac = None
+    if args.max_drop_fraction is not None:
+        if not (0 < args.max_drop_fraction <= 1):
+            print(f"error: --max-drop-fraction must be between 0 (exclusive) and 1 (inclusive), got {args.max_drop_fraction}", file=sys.stderr)
+            return 2
+        max_drop_frac = args.max_drop_fraction
+
     try:
         if args.snapshot:
-            metadata = build_dataset(args.snapshot, args.out, seed=args.seed, force=args.force)
+            metadata = build_dataset(args.snapshot, args.out, seed=args.seed, force=args.force, max_drop_fraction=max_drop_frac)
             location = args.out
         else:
             data_dir = _resolve_data_dir(args)
             metadata = build_from_ledger(
-                data_dir, out_root=args.out, corpus_id=args.corpus_id, seed=args.seed, force=args.force
+                data_dir, out_root=args.out, corpus_id=args.corpus_id, seed=args.seed, force=args.force, max_drop_fraction=max_drop_frac
             )
             location = os.path.join(args.out or datasets_root(data_dir), metadata["dataset_version"])
     except (ValueError, OSError, LedgerError) as exc:
@@ -77,7 +86,8 @@ def _dataset_build(args):
     sizes = metadata["split_sizes"]
     print(
         f"Dataset {metadata['dataset_version']}: train {sizes['train']}, dev {sizes['dev']}, test {sizes['test']} "
-        f"({metadata['train_rows_dropped_for_transcript_overlap']} train rows dropped for transcript overlap) -> {location}"
+        f"({metadata['train_rows_dropped_for_transcript_overlap']} dropped for transcript overlap, "
+        f"{metadata.get('train_speakers_lost', 0)} speakers lost) -> {location}"
     )
     return 0
 
@@ -365,6 +375,8 @@ def main(argv=None):
     build_p.add_argument("--snapshot", default=None, help="Build from a `dataset pull` snapshot directory instead of the ledger")
     build_p.add_argument("--seed", type=int, default=42, help="Part of the split salt; keep it to keep the split")
     build_p.add_argument("--force", action="store_true", help="Rebuild even if this dataset version already exists")
+    build_p.add_argument("--max-drop-fraction", type=float, default=None,
+                        help="Fail the build if the transcript-leakage guard drops more than this fraction of train rows (0 < F <= 1)")
     build_p.set_defaults(func=_dataset_build)
 
     lineage_p = dataset_sub.add_parser("lineage", help="List the dataset versions and models that used a speaker")

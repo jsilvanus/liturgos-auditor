@@ -363,7 +363,8 @@ def test_build_metadata_keys_and_counts(grown_corpus):
     assert set(metadata) >= {
         "dataset_version", "manifest_sha256", "created_at", "source", "seed", "split_ratios", "split_salt",
         "split_sizes", "speaker_counts", "train_rows_without_speaker", "train_rows_dropped_for_transcript_overlap",
-        "speaker_disjoint",
+        "speaker_disjoint", "train_rows_before_leakage_guard", "train_dropped_fraction", "train_distinct_transcripts",
+        "train_speakers_lost",
     }
     assert metadata["source"] == {"kind": "ledger", "corpus_ids": [3]}
     assert metadata["seed"] == 9
@@ -372,6 +373,8 @@ def test_build_metadata_keys_and_counts(grown_corpus):
     assert sum(metadata["split_sizes"].values()) == 80
     assert sum(metadata["speaker_counts"].values()) == 40
     assert metadata["created_at"].endswith("Z")
+    assert metadata["train_rows_before_leakage_guard"] >= metadata["split_sizes"]["train"]
+    assert 0 <= metadata["train_dropped_fraction"] <= 1
 
 
 def test_dataset_columns_text_normalisation_and_embedded_audio(tmp_path):
@@ -422,6 +425,177 @@ def test_only_active_rows_of_the_requested_corpus_are_used(tmp_path):
     assert sum(only_3["split_sizes"].values()) == 5
     manifest = json.loads((_out_dir(tmp_path, only_3) / "manifest.json").read_text(encoding="utf-8"))
     assert {row["recording_id"] for row in manifest["rows"]} == {1, 2, 3, 4, 5}
+
+
+def test_leakage_guard_high_drop_fraction_produces_warning_and_metadata(tmp_path, caplog):
+    """When drop fraction > 50%, the guard logs a warning and adds metadata."""
+    import logging
+
+    # Create a synthetic corpus where the guard drops >50% of train rows.
+    # Strategy: Only 3 unique sentences, distributed: 1 in dev only, 1 in test only, 1 in train only,
+    # but train speakers also read all dev/test sentences. This forces high drop.
+    shared = ["shared_a", "shared_b"]
+    train_only = ["train_only"]
+
+    train_speakers = _speakers_in("train", 40)
+    dev_speakers = _speakers_in("dev", 10, taken=train_speakers)
+    test_speakers = _speakers_in("test", 10, taken=train_speakers + dev_speakers)
+
+    with Ledger(ledger_path(tmp_path)) as ledger:
+        rid = 1
+        # Train speakers: read both shared sentences (will be dropped) + 1 train-only.
+        for train_spk in train_speakers:
+            for prompt in shared + train_only:
+                _add(tmp_path, ledger, rid, train_spk, prompt)
+                rid += 1
+        # Dev speakers: read 1 shared sentence only.
+        for dev_spk in dev_speakers:
+            _add(tmp_path, ledger, rid, dev_spk, shared[0])
+            rid += 1
+        # Test speakers: read 1 shared sentence only.
+        for test_spk in test_speakers:
+            _add(tmp_path, ledger, rid, test_spk, shared[1])
+            rid += 1
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        metadata = build_from_ledger(tmp_path, split_ratios=RATIOS)
+
+    # Both shared sentences appear in dev/test, so ~67% of train rows are dropped (2 of 3 per speaker).
+    assert metadata["train_dropped_fraction"] > 0.5
+    assert metadata["train_rows_before_leakage_guard"] == 120
+    assert metadata["train_rows_dropped_for_transcript_overlap"] == 80
+    # Check that a warning was logged.
+    assert any("Dropped" in record.message and "train rows" in record.message for record in caplog.records)
+    # Check that warnings list is in metadata.
+    assert "warnings" in metadata
+    assert any("prompts are read by many speakers" in w for w in metadata["warnings"])
+
+
+def test_leakage_guard_normal_corpus_no_warning_no_drop(tmp_path, caplog):
+    """When a normal corpus has distinct sentences, the guard drops few or no rows and does not warn."""
+    import logging
+
+    train_speakers = _speakers_in("train", 10)
+    dev_speakers = _speakers_in("dev", 3, taken=train_speakers)
+    test_speakers = _speakers_in("test", 3, taken=train_speakers + dev_speakers)
+
+    with Ledger(ledger_path(tmp_path)) as ledger:
+        rid = 1
+        # Each speaker gets unique sentences (not repeated across speakers).
+        for train_spk in train_speakers:
+            _add(tmp_path, ledger, rid, train_spk, f"Lause numero {rid}")
+            rid += 1
+        for dev_spk in dev_speakers:
+            _add(tmp_path, ledger, rid, dev_spk, f"Lause numero {rid}")
+            rid += 1
+        for test_spk in test_speakers:
+            _add(tmp_path, ledger, rid, test_spk, f"Lause numero {rid}")
+            rid += 1
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        metadata = build_from_ledger(tmp_path, split_ratios=RATIOS)
+
+    # Few or no rows dropped since sentences are unique.
+    assert metadata["train_dropped_fraction"] < 0.5
+    # No warning should be logged.
+    assert not any("Dropped" in record.message and "train rows" in record.message for record in caplog.records)
+    # No warnings in metadata.
+    assert "warnings" not in metadata
+
+
+def test_max_drop_fraction_raises_before_creating_output(tmp_path):
+    """When max_drop_fraction is exceeded, raise ValueError before writing anything."""
+    # Shared prompts (will be dropped) + unique prompts (will stay).
+    shared_prompts = ["Yksi", "Kaksi", "Kolme"]
+    unique_prompts = [f"Uniq {i}" for i in range(15)]
+
+    train_speaker_ids = _speakers_in("train", 15)
+    dev_speaker_ids = _speakers_in("dev", 4, taken=train_speaker_ids)
+    test_speaker_ids = _speakers_in("test", 4, taken=train_speaker_ids + dev_speaker_ids)
+
+    with Ledger(ledger_path(tmp_path)) as ledger:
+        rid = 1
+        # Train speakers: shared + unique.
+        for train_spk in train_speaker_ids:
+            for prompt in shared_prompts:
+                _add(tmp_path, ledger, rid, train_spk, prompt)
+                rid += 1
+            for prompt in unique_prompts:
+                _add(tmp_path, ledger, rid, train_spk, prompt)
+                rid += 1
+        # Dev and test: shared only.
+        for dev_spk in dev_speaker_ids:
+            for prompt in shared_prompts:
+                _add(tmp_path, ledger, rid, dev_spk, prompt)
+                rid += 1
+        for test_spk in test_speaker_ids:
+            for prompt in shared_prompts:
+                _add(tmp_path, ledger, rid, test_spk, prompt)
+                rid += 1
+
+    # max_drop_fraction=0.1 should fail since the actual drop is ~0.167 (45 of 270).
+    with pytest.raises(ValueError, match="Dropped.*> max 10.0%"):
+        build_from_ledger(tmp_path, split_ratios=RATIOS, max_drop_fraction=0.1)
+
+    # No dataset directory should be created.
+    assert not datasets_root(tmp_path).exists()
+
+    # max_drop_fraction=0.2 should succeed.
+    metadata = build_from_ledger(tmp_path, split_ratios=RATIOS, max_drop_fraction=0.2)
+    assert metadata["train_dropped_fraction"] < 0.2
+
+
+def test_cli_build_max_drop_fraction_flag_and_validation(tmp_path, capsys):
+    """Test --max-drop-fraction flag on the CLI and validation."""
+    import logging
+
+    # Create corpus with shared and unique prompts to control drop fraction.
+    # 2 shared prompts (will be dropped), 25 unique prompts (will stay) = 27 per speaker.
+    # Drop fraction = 2*12 / (27*12) = 24/324 ≈ 0.074
+    shared_prompts = ["A", "B"]
+    unique_prompts = [f"U{i}" for i in range(25)]
+
+    train_speakers = _speakers_in("train", 12)
+    dev_speakers = _speakers_in("dev", 3, taken=train_speakers)
+    test_speakers = _speakers_in("test", 3, taken=train_speakers + dev_speakers)
+
+    with Ledger(ledger_path(tmp_path)) as ledger:
+        rid = 1
+        # Train speakers: shared + unique.
+        for train_spk in train_speakers:
+            for prompt in shared_prompts:
+                _add(tmp_path, ledger, rid, train_spk, prompt)
+                rid += 1
+            for prompt in unique_prompts:
+                _add(tmp_path, ledger, rid, train_spk, prompt)
+                rid += 1
+        # Dev and test: shared only.
+        for dev_spk in dev_speakers:
+            for prompt in shared_prompts:
+                _add(tmp_path, ledger, rid, dev_spk, prompt)
+                rid += 1
+        for test_spk in test_speakers:
+            for prompt in shared_prompts:
+                _add(tmp_path, ledger, rid, test_spk, prompt)
+                rid += 1
+
+    # Test with --max-drop-fraction 0.05 should fail (drop is ~0.074).
+    assert main(["dataset", "build", "--data-dir", str(tmp_path), "--max-drop-fraction", "0.05"]) == 1
+    assert "Dropped" in capsys.readouterr().err
+    assert not datasets_root(tmp_path).exists()
+
+    # Test with --max-drop-fraction 0.1 should succeed (drop is ~0.074).
+    assert main(["dataset", "build", "--data-dir", str(tmp_path), "--max-drop-fraction", "0.1"]) == 0
+    assert "train" in capsys.readouterr().out
+
+    # Test with invalid value should fail with exit code 2.
+    assert main(["dataset", "build", "--data-dir", str(tmp_path), "--max-drop-fraction", "0"]) == 2
+    assert "must be between" in capsys.readouterr().err
+
+    assert main(["dataset", "build", "--data-dir", str(tmp_path), "--max-drop-fraction", "1.5"]) == 2
+    assert "must be between" in capsys.readouterr().err
 
 
 def test_build_fails_with_an_actionable_error_when_an_active_row_has_no_audio_file(tmp_path):

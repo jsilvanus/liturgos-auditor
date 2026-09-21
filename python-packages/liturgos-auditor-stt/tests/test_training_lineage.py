@@ -95,6 +95,35 @@ def test_git_commit_is_none_when_git_is_unavailable_or_fails(monkeypatch, failur
     assert lineage.git_commit() is None
 
 
+def test_git_commit_uses_env_variable_when_set(monkeypatch):
+    """AUDITOR_STT_GIT_COMMIT environment variable takes precedence over git command."""
+    monkeypatch.setenv("AUDITOR_STT_GIT_COMMIT", "envcommit123")
+
+    # Even if git would work, env var is used
+    def fake_run(cmd, **kwargs):
+        return SimpleNamespace(stdout="gitcommit456\n")
+
+    monkeypatch.setattr(lineage.subprocess, "run", fake_run)
+    assert lineage.git_commit() == "envcommit123"
+
+
+def test_git_commit_strips_env_variable(monkeypatch):
+    """AUDITOR_STT_GIT_COMMIT is stripped of whitespace."""
+    monkeypatch.setenv("AUDITOR_STT_GIT_COMMIT", "  envcommit123  ")
+    assert lineage.git_commit() == "envcommit123"
+
+
+def test_git_commit_ignores_empty_env_variable(monkeypatch):
+    """Empty AUDITOR_STT_GIT_COMMIT falls back to git command."""
+    monkeypatch.setenv("AUDITOR_STT_GIT_COMMIT", "")
+
+    def fake_run(cmd, **kwargs):
+        return SimpleNamespace(stdout="gitcommit456\n")
+
+    monkeypatch.setattr(lineage.subprocess, "run", fake_run)
+    assert lineage.git_commit() == "gitcommit456"
+
+
 # --- package_versions ---------------------------------------------------------------
 
 def test_package_versions_maps_missing_packages_to_none():

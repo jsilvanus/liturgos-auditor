@@ -8,6 +8,7 @@ is recorded as null and never stops a training run.
 import hashlib
 import json
 import logging
+import os
 import subprocess
 from importlib import metadata
 from pathlib import Path
@@ -47,7 +48,17 @@ def dataset_lineage(dataset_dir):
 
 
 def git_commit(repo_dir=None):
-    """HEAD of the checkout the training code runs from, or None (no git, or not a checkout)."""
+    """HEAD of the checkout the training code runs from, or None (no git, or not a checkout).
+
+    First checks AUDITOR_STT_GIT_COMMIT environment variable (used in Docker images where
+    .git is not available), then falls back to `git rev-parse HEAD`.
+    """
+    # Check environment variable first (set during Docker build)
+    env_commit = os.environ.get("AUDITOR_STT_GIT_COMMIT", "").strip()
+    if env_commit:
+        return env_commit
+
+    # Fallback to git command
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
