@@ -1,0 +1,16 @@
+# Build context of all four images (docker/liturgos-auditor-stt and docker/liturgos-auditor-train).
+# Allow-list: everything is excluded unless it is named below, so nothing unexpected can ever
+# enter a build context or be picked up by a careless `COPY . .`. This directory holds local
+# virtualenvs (1.8 GB and more), test fixtures and can end up holding data/, models/, ledger.sqlite
+# or voice recordings when someone runs the CLI from here; none of that belongs in an image.
+*
+
+# The only files the Dockerfiles COPY. If a Dockerfile starts to COPY something else, add it here.
+!pyproject.toml
+!README.md
+!auditor_stt/
+
+# Re-exclude bytecode inside the allowed directory: local .pyc files are for another Python
+# version or platform than the image's, and only make the layer larger and less reproducible.
+**/__pycache__/
+**/*.py[cod]

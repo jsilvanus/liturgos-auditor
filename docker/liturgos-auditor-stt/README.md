@@ -1,6 +1,6 @@
 # auditor-stt Docker images
 
-Two serving images are provided: CPU-only (`Dockerfile`, based on `python:3.12-slim`) and GPU (`Dockerfile.cuda`, based on `nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04`). Both install ffmpeg and the `auditor-stt` package (serving dependencies only) and start `auditor-stt serve`. Model weights are not baked into either image; they are downloaded on first start. Fine-tuning has its own image: [docker/liturgos-auditor-train](../liturgos-auditor-train/README.md).
+Two serving images are provided: CPU-only (`Dockerfile`, based on `python:3.12-slim`) and GPU (`Dockerfile.cuda`, based on `nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04`). Both install ffmpeg and the `auditor-stt` package (serving dependencies only) and start `auditor-stt serve`. Model weights are not baked into either image; they are downloaded on first start. Fine-tuning has its own image: [docker/liturgos-auditor-train](../liturgos-auditor-train/README.md). Both images run as an unprivileged user, not as root; see [Non-root user](#non-root-user), and [Upgrading an existing deployment](#upgrading-an-existing-deployment) if you already have volumes from an older image.
 
 ## Building
 
@@ -21,6 +21,8 @@ Or use Docker Compose from the repository root, which builds and runs the **CPU*
 ```bash
 docker compose up
 ```
+
+The build context is `python-packages/liturgos-auditor-stt`. Its `.dockerignore` is an allow-list: only `pyproject.toml`, `README.md` and `auditor_stt/` (without bytecode) can enter a build, so a local virtualenv, a `data/` or `models/` directory, a ledger or voice recordings in that directory never reach the daemon or an image. If a Dockerfile ever needs another file from there, add it to that `.dockerignore`. The repository root has a `.dockerignore` as well, a deny-list for builds that use the root as context.
 
 ## Volumes
 
@@ -43,6 +45,39 @@ docker run --rm \
   -e AUDITOR_STT_MEDIA_ROOT=/media \
   auditor-stt:cpu
 ```
+
+## Non-root user
+
+Both images run as the unprivileged user `auditor`, uid and gid `10001`, never as root (`docker inspect --format "{{.Config.User}}" <image>` prints `10001:10001`; the id is numeric so that orchestrator checks such as Kubernetes `runAsNonRoot` can verify it). The process starts as that user; there is no entrypoint that starts as root and drops privileges. The code in `/app` is owned by root and cannot be modified by the service. The service writes only to `/data`, `/models` (including `/models/registry`), its home directory `/home/auditor` (library caches, `HOME`) and `/tmp`.
+
+- **Named volumes** (what `docker-compose.yml` uses): a volume that is created empty copies the owner of its mount point from the image, so a new volume is writable without any setup.
+- **Bind mounts** (`-v /srv/auditor/models:/models`) keep the owner of the host directory. On a Linux host that directory must be writable by uid 10001 (`sudo chown -R 10001:10001 /srv/auditor/models`), or you run the container as the directory's owner with `--user "$(id -u):$(id -g)"` (Compose: `user: "1000:1000"`). Docker Desktop on Windows and macOS does not enforce host permissions on bind mounts, so this only matters on Linux hosts. With `--user` the home directory is world-writable, so the caches work for any uid; the files the service creates then belong to that uid.
+- `docker-compose.yml` also sets `no-new-privileges` and drops all Linux capabilities. It does not make the root filesystem read-only, because the service writes uploads and normalised audio to `/tmp`.
+
+### Upgrading an existing deployment
+
+Volumes that were created by an older image, which ran as root, stay owned by root, so the non-root container cannot write to them until their ownership is fixed once. What you see if you skip this:
+
+- a root-owned `/models` volume: the container runs but `GET /health` stays `503` (`"loaded": false`) and the log shows `PermissionError: [Errno 13] Permission denied: '/models/models--Systran--faster-whisper-...'` followed by `Model failed to load at startup`;
+- a root-owned `/data` volume: the container exits at startup with `PermissionError: [Errno 13] Permission denied: '/data/jobs'` (with `restart: unless-stopped` it keeps restarting).
+
+The fix is one `chown` per volume, run as root in a throwaway container, with the service stopped. Example for the default Compose project `liturgos-auditor` (Compose prefixes volume names with the project name, the directory name by default, and names the image `<project>-<service>`; check with `docker volume ls` and `docker images`, and use `auditor-stt:cpu` or whatever tag you built yourself instead of the image name below):
+
+```bash
+docker compose build
+docker compose stop auditor-stt
+
+docker run --rm --user 0 --entrypoint chown \
+  -v liturgos-auditor_auditor-stt-models:/models \
+  liturgos-auditor-auditor-stt -R 10001:10001 /models
+docker run --rm --user 0 --entrypoint chown \
+  -v liturgos-auditor_auditor-stt-data:/data \
+  liturgos-auditor-auditor-stt -R 10001:10001 /data
+
+docker compose up -d
+```
+
+Use plain `docker run` for this, not `docker compose run`: the Compose service drops all capabilities, and root without `CAP_CHOWN` cannot change owners. A volume that does not exist yet (for example the data volume, if your old container had none) needs no fix: Compose creates it from the new image, owned by 10001. On Windows with Git Bash, set `MSYS_NO_PATHCONV=1` for the commands, or Git Bash rewrites `/models` into a Windows path. You can check the result with `docker run --rm --entrypoint ls -v liturgos-auditor_auditor-stt-models:/models liturgos-auditor-auditor-stt -ldn /models`, which should show `10001 10001`.
 
 ## Environment variables
 

@@ -32,10 +32,22 @@ services:
       # To enable media root (read-only shared media directory), uncomment below:
       # AUDITOR_STT_MEDIA_ROOT: /media
     volumes:
+      # The image runs as uid/gid 10001, not root. A volume created by this image starts out owned by
+      # 10001. Volumes created by an older, root-running image stay root-owned and need a one-time
+      # chown before the service can write to them: see "Upgrading an existing deployment" in
+      # docker/liturgos-auditor-stt/README.md.
       - auditor-stt-models:/models
       - auditor-stt-data:/data
       # Uncomment below to mount a shared media directory (read-only):
       # - ${AUDITOR_STT_MEDIA_HOST_DIR}:/media:ro
+    # Hardening on top of the non-root user. no-new-privileges stops a compromised process from
+    # gaining privileges through a setuid binary; cap_drop ALL removes every Linux capability (the
+    # service binds port 8090 and writes to its own volumes, so it needs none). Not read_only: the
+    # service writes temp files (uploads, normalised audio) under /tmp.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
 
 volumes:

@@ -1,0 +1,55 @@
+# Defensive deny-list for a build done with the repository root as its context. None of the
+# current images use it (their context is python-packages/liturgos-auditor-stt, which has its own
+# allow-list .dockerignore), but a future `docker build .` from here must not send the git history,
+# virtualenvs, secrets or voice data to the daemon or bake them into an image.
+# Nested patterns start with **/ because a pattern without it only matches at the context root.
+
+# Version control history and local agent/tooling state.
+.git
+.claude
+
+# Python virtualenvs and caches: large, platform-specific, and not reproducible inside an image.
+**/.venv*
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/*.egg-info
+
+# Secrets: compose env files (AUDITOR_STT_API_KEY, CSV_ADMIN_TOKEN) and private keys.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+
+# Service and training state (job state, ledger, audio store, datasets, model downloads, runs,
+# exports, registry). It holds voice recordings and models trained on them. These are the
+# directories the CLI creates as ./data and ./models when run from a source checkout, and the
+# ones the images mount as /data and /models. If the source ever gains a real package or folder
+# named data or models, narrow these two patterns.
+/data
+/models
+**/data
+**/models
+**/*.sqlite
+**/*.sqlite3
+**/*.sqlite-journal
+**/*.sqlite-wal
+**/*.sqlite-shm
+
+# Recordings and video in the containers this project handles (the repository root holds a local
+# test video, kept out of git by .gitignore). Voice data is personal data: see docs/data-protection.md.
+**/*.mp4
+**/*.mkv
+**/*.mov
+**/*.wav
+**/*.ogg
+**/*.oga
+**/*.opus
+**/*.webm
+**/*.m4a
+**/*.mp3
+**/*.flac
+**/*.aac
+
+# Logs.
+**/*.log

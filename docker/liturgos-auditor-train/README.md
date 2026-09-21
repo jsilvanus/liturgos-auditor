@@ -22,6 +22,8 @@ docker build -t auditor-train:cuda -f docker/liturgos-auditor-train/Dockerfile.c
 
 The images contain the code and its dependencies only: no recordings, no model weights. Pass `--build-arg GIT_COMMIT=$(git rev-parse HEAD)` to record the git commit in `training_metadata.json`; without it, it is recorded as null. Tag the image yourself and note the tag with each run.
 
+The `.dockerignore` of the build context is an allow-list: only `pyproject.toml`, `README.md` and `auditor_stt/` can enter a build, so a virtualenv, `data/`, `models/`, a ledger or recordings lying in `python-packages/liturgos-auditor-stt` never reach an image.
+
 ## Run
 
 Mount three volumes:
@@ -37,6 +39,24 @@ Optionally pass environment variables:
 The image sets `HF_HOME=/hf` and `AUDITOR_STT_TRAIN_DATA_DIR=/data`, so `--data-dir` can be left out.
 
 `dataset build` puts its output in `/data/datasets/<version>` by default. Keep it there: `dataset lineage`, `dataset purge` and `dataset prune` look only in `<data dir>/datasets`, so a dataset built with `--out` somewhere else is invisible to the erasure and retention commands. `<version>` is a 16-character hash printed by `dataset build`.
+
+### Non-root user
+
+Both images run as the unprivileged user `auditor`, uid and gid `10001`, never as root (`docker inspect --format "{{.Config.User}}" auditor-train:cpu` prints `10001:10001`). The code in `/app` is owned by root and read-only for it; the commands write only to `/data`, `/models`, `/hf` and the home directory `/home/auditor`.
+
+- **Named volumes** (`auditor-hf:/hf`): a volume that is created empty copies the owner of its mount point from the image, so it is writable without setup.
+- **Host directories** (`-v <host data dir>:/data`) keep the owner of the host directory. On Docker Desktop for Windows and macOS host permissions are not enforced on bind mounts and nothing needs to be done. On a Linux host either make the directory writable by uid 10001 (`sudo chown -R 10001:10001 <host data dir>`) or, usually nicer because the files on the host then belong to you, run the container as yourself: `docker run --user "$(id -u):$(id -g)" ...`. That uid has no passwd entry in the image; the image works with it because `HOME` is set to `/home/auditor`, and `/hf` and the home directory are world-writable (mode 1777, like `/tmp`; they hold only public model weights and caches, never recordings). `/data` and `/models` are deliberately not world-writable.
+- Use one uid per volume or host directory. A HuggingFace cache that was filled by uid 10001 cannot be extended by another uid, because its sub-directories belong to 10001; pick either the default user or `--user` and stay with it.
+
+#### Existing volumes and directories (after upgrading from a root image)
+
+Older images ran as root, so a volume or host directory they wrote is owned by root and the non-root container cannot write to it: a download into a root-owned `/hf` fails with `PermissionError: [Errno 13] Permission denied: '/hf/hub'`. Fix the ownership once, as root, in a throwaway container. For the named cache volume:
+
+```bash
+docker run --rm --user 0 --entrypoint chown -v auditor-hf:/hf auditor-train:cpu -R 10001:10001 /hf
+```
+
+For a host directory on a Linux host, `sudo chown -R "$(id -u):$(id -g)" <host dir>` and then run with `--user "$(id -u):$(id -g)"` (or `chown -R 10001:10001` and run with the default user). The ledger and everything else in `/data` that an older image created is root-owned too. On Windows and macOS nothing needs to be done for bind mounts. In Git Bash on Windows set `MSYS_NO_PATHCONV=1` for the command above, or `/hf` is rewritten into a Windows path. The serving image's volumes have the same problem and their own fix, see [docker/liturgos-auditor-stt](../liturgos-auditor-stt/README.md#upgrading-an-existing-deployment).
 
 ### PowerShell examples
 
@@ -76,6 +96,8 @@ docker run --rm -v $env:USERPROFILE\auditor-models:/models `
 ```
 
 ### Bash examples (Linux/macOS)
+
+On a Linux host add `--user "$(id -u):$(id -g)"` to each `docker run` below so the container can write to your host directories (see [Non-root user](#non-root-user)).
 
 ```bash
 # Sync
