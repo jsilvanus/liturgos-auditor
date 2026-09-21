@@ -150,14 +150,15 @@ Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` a
 
 Read by the `auditor-stt dataset` commands, not by the service: `AUDITOR_STT_TRAIN_DATA_DIR` (ledger and dataset directory, default `./data`), `AUDITOR_STT_SPEAKER_SALT` (salt for pseudonymising speaker ids, `dataset sync`) and `CSV_ADMIN_TOKEN` (crowd-source-voice bearer token, `dataset pull` and `dataset sync`). The salt and token variable names are the defaults of `--speaker-salt-env` and `--token-env`. `auditor-stt eval` also reads `AUDITOR_STT_MODEL_DIR`. See [docs/training-pipeline.md](docs/training-pipeline.md).
 
-The `scripts/video-to-vtt.py` client has its own variables (`AUDITOR_STT_URL`, and the API key variable named by `--api-key-env`); see [docs/video-to-vtt.md](docs/video-to-vtt.md).
+The `scripts/video-to-vtt-jobs.py` client (jobs API) has its own variables (`AUDITOR_STT_URL`, and the API key variable named by `--api-key-env`); see [docs/video-to-vtt-jobs.md](docs/video-to-vtt-jobs.md).
 
 ## Documentation
 
 - **[Integration guide](docs/integration.md)**: How lcyt and saarnavideo call the service.
 - **[Batch jobs API](docs/batch-jobs.md)**: Reference for `/v1/jobs` submission, polling, results, retention and error codes.
 - **[Word-level transcription](docs/word-level-transcription.md)**: Segment and word fields, `avg_logprob`, live route options.
-- **[video-to-vtt script](docs/video-to-vtt.md)**: Command-line client for the jobs API (`scripts/video-to-vtt.py`).
+- **[video-to-vtt script](docs/video-to-vtt.md)**: Client-side chunking: cuts the video into overlapping chunks, posts each to `/inference` and appends VTT cues as it goes (`scripts/video-to-vtt.py`; works with any service version).
+- **[video-to-vtt-jobs script](docs/video-to-vtt-jobs.md)**: Client for the server-side jobs API with resume and partial results (`scripts/video-to-vtt-jobs.py`).
 - **[Model download](docs/model-download.md)**: Fetching faster-whisper models ahead of time.
 - **[Docker README](docker/liturgos-auditor-stt/README.md)**: Serving image build, environment, volumes, GPU.
 - **[Training pipeline](docs/training-pipeline.md)**: Dataset sync and build, fine-tuning, export, evaluation gate, registry and promotion.

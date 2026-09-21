@@ -1,4 +1,4 @@
-"""Tests for scripts/video-to-vtt.py"""
+"""Tests for scripts/video-to-vtt-jobs.py"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 
 # Load the script as a module
-script_path = Path(__file__).resolve().parents[3] / "scripts" / "video-to-vtt.py"
+script_path = Path(__file__).resolve().parents[3] / "scripts" / "video-to-vtt-jobs.py"
 spec = importlib.util.spec_from_file_location("video_to_vtt", script_path)
 video_to_vtt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(video_to_vtt)

@@ -62,7 +62,7 @@ A job is accepted while the model is still loading. The runner normalises and pl
 - **503**: jobs are not configured (no `AUDITOR_STT_DATA_DIR`).
 - **413**: the announced `Content-Length` exceeds the cap (plus 1 MiB of allowance for multipart framing), or a body sent without `Content-Length` exceeds it while streaming. The route itself then enforces the exact file size while saving the upload and also answers 413. A rejected upload leaves nothing on disk.
 
-A client that is still sending the body when the server refuses it may see a connection reset instead of the status code (`scripts/video-to-vtt.py` runs a pre-flight check for this reason).
+A client that is still sending the body when the server refuses it may see a connection reset instead of the status code (`scripts/video-to-vtt-jobs.py` runs a pre-flight check for this reason).
 
 ## Job status
 
@@ -329,7 +329,7 @@ A **cancelled job**: `DELETE` on a running job ends in deletion (see above). The
 An **interrupted job** (process crash, out of memory, or a stop of the service):
 - Keeps the chunks finished so far.
 - Is `running` in its manifest until the service starts again; then it is requeued and continues with the unfinished chunks.
-- Needs nothing from the client: keep polling the same id. While the service is down the requests simply fail (`scripts/video-to-vtt.py` retries them; see [video-to-vtt](video-to-vtt.md)).
+- Needs nothing from the client: keep polling the same id. While the service is down the requests simply fail (`scripts/video-to-vtt-jobs.py` retries them; see [video-to-vtt-jobs](video-to-vtt-jobs.md)).
 
 ## Performance notes (CPU-only deployments)
 
