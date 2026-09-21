@@ -52,8 +52,9 @@ logger = logging.getLogger(__name__)
 MASS_REMOVAL_FRACTION = 0.5
 MASS_REMOVAL_MIN_ROWS = 5
 
-# csv user ids are sequential integers. The bound keeps a 24-char hex pseudonym that
-# happens to be all digits (about 1 in 77,000) from being mistaken for one.
+# csv user ids are sequential integers. csv's own pseudonyms are 64 hex characters, so an
+# all-digit one is practically impossible; the length bound still keeps any long digit
+# string from being mistaken for a raw id.
 _RAW_USER_ID = re.compile(r"[0-9]{1,18}")
 
 
@@ -94,7 +95,11 @@ class Listed:
 
 
 def hash_speaker_id(raw_id, salt):
-    """Pseudonymise a raw csv user id: hex HMAC-SHA256(salt, id), truncated to 24 chars like csv's own."""
+    """Pseudonymise a raw csv user id: hex HMAC-SHA256(salt, id), truncated to 24 chars.
+
+    csv itself sends pseudonyms (a salted double SHA-256 of the contributor's email), so
+    this only covers a raw numeric id, which the current csv export never carries.
+    """
     return hmac.new(salt.encode("utf-8"), str(raw_id).encode("utf-8"), hashlib.sha256).hexdigest()[:24]
 
 

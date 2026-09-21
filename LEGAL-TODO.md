@@ -48,12 +48,18 @@ all training-chain testing used synthetic recordings.
 
 ## Security items in crowd-source-voice that affect the same data
 
-- `/uploads` audio is served without authentication.
+- With the local storage driver `/uploads` audio is served without authentication (the
+  sync itself no longer uses it: it downloads through a token-gated route). Use the S3
+  driver with a private bucket for real data.
+- Uploads accept a file named `x.html` sent with an audio MIME type and serve it back as
+  HTML from `/uploads` (stored cross-site scripting on csv's origin).
 - `GET /api/recording/:id` and `GET /api/validation/flagged` return `user_id` and
   `file_path` to any logged-in user.
 - `server/middleware/auth.js` falls back to a hard-coded `JWT_SECRET` if the variable is
   unset: confirm production sets it.
-- Before the first sync, set `SPEAKER_ID_SECRET` (long, random, never changed afterwards,
-  because speaker ids derive from it) and `EXPORT_API_TOKEN` in csv's deployment.
+- Before the first sync, set `SPEAKER_ID_SALT` (long, random, never changed afterwards,
+  because speaker ids derive from it; csv's `.env.example` ships a public placeholder) and
+  `EXPORT_API_TOKEN` in csv's deployment. The speaker id is a salted hash of the
+  contributor's **email**, so the salt is what keeps it private.
 
 Details and the export contract: [docs/crowd-source-voice-contract.md](docs/crowd-source-voice-contract.md).

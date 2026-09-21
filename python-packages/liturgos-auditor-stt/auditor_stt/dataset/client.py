@@ -69,8 +69,11 @@ class CrowdSourceVoiceClient:
     def download_audio(self, source_path):
         """Fetch one recording's audio bytes.
 
-        crowd-source-voice serves recordings statically at /uploads (no auth
-        on that route) — source_path is the manifest's raw file_path.
+        The path is relative to the base URL. For a current export it is the
+        row's `audio_url` (`/api/export/audio/<recording_id>`), a token-gated
+        route that streams the file from csv's storage (disk or S3); the bearer
+        header of this client is what authorises it. An old export points at the
+        static `/uploads/...` route instead, which needs no token.
         """
         resp = self._client.get(f"{self.base_url}/{source_path.lstrip('/')}")
         resp.raise_for_status()

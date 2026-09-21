@@ -1,22 +1,25 @@
 # crowd-source-voice export contract
 
-What `auditor-stt dataset sync` (and the older `dataset pull`) expects from crowd-source-voice (csv), and what csv provides. "v2" is this repository's name for the csv export that carries `recording_id`, `audio_url` and `speaker_id` and accepts a read-only export token (the auditor tests call it `v2`); "legacy" is the export without them. The csv side was checked in the csv repository (`server/routes/export.js`, `server/middleware/exportAuth.js`, `server/utils/speakerId.js`, `README.md`) and the auditor side in `auditor_stt/dataset/`. csv was only read, not changed.
+What `auditor-stt dataset sync` (and the older `dataset pull`) expects from crowd-source-voice (csv), and what csv provides. "v2" is this repository's name for the csv export that carries `recording_id`, `audio_url` and `speaker_id`, serves the audio through a token-gated route and accepts a read-only export token (the auditor tests call it `v2`); "legacy" is the export without them.
+
+Where each part comes from in the csv repository: `speaker_id` was added by csv PR #4 (`server/utils/speakerId.js`) and S3 storage by PR #5 (`server/utils/storage.js`); `recording_id`, `audio_url`, the export token (`server/middleware/exportAuth.js`) and the audio route (`GET /api/export/audio/:recordingId`) are on the branch `export-audio-route` (not merged at the time of writing). The auditor side is `auditor_stt/dataset/`.
 
 How the data is used and protected afterwards is in [data-protection.md](data-protection.md). The pipeline is in [training-pipeline.md](training-pipeline.md).
 
 ## 1. Routes
 
-All three are `GET` under `/api/export` and accept `Authorization: Bearer <token>` where the token is an admin JWT or csv's `EXPORT_API_TOKEN`.
+All four are `GET` under `/api/export` and accept `Authorization: Bearer <token>` where the token is an admin JWT or csv's `EXPORT_API_TOKEN`.
 
 | Route | Query | Used by the sync client |
 |---|---|---|
 | `/api/export` | `corpus_id` (required), `format` (`csv` default, or `json`), `include_all` | Yes, with `format=json`; never `include_all` |
 | `/api/export/manifest` | `corpus_id` (required) | Only against a legacy export (section 4) |
 | `/api/export/stats` | `corpus_id` (optional) | No |
+| `/api/export/audio/:recordingId` | `include_all` (admin JWT only) | Yes: this is the row's `audio_url` |
 
-Audio is not served by these routes but by the static route `/uploads/...` (no authentication, see section 6). The client fetches `<base-url>/<audio_url without the leading slash>`.
+Audio is streamed by `/api/export/audio/:recordingId` from whichever storage driver csv uses (local disk, or S3/MinIO with `STORAGE_DRIVER=s3`), so the client needs only this API and one bearer token, never direct access to the uploads folder or the bucket. The client fetches `<base-url><audio_url>` with the same bearer header. The route answers 200 with the file bytes and `Cache-Control: private, no-store`; 404 `{"error":"Recording not found"}` with an identical body when the recording does not exist, is not validated, or its file is missing; 400 for an id that is not a positive integer; 403 for the export token with `include_all=true`; 401 without a valid token.
 
-Which recordings are exported: those with a quality score of at least 4.0 and at least 2 validations (`MIN_SCORE_THRESHOLD`, `MIN_VALIDATIONS` in `export.js`). `include_all=true` drops both filters, is honoured for an admin JWT only, and is answered with 403 for the export token. The manifest always applies the filters.
+Which recordings are exported (and which audio the route serves to the export token): those with a quality score of at least 4.0 and at least 2 validations (`MIN_SCORE_THRESHOLD`, `MIN_VALIDATIONS` in `export.js`). `include_all=true` drops both filters, is honoured for an admin JWT only, and is answered with 403 for the export token. The manifest always applies the filters.
 
 ### 1.1 `GET /api/export?corpus_id=N&format=json`
 
@@ -34,8 +37,8 @@ Each row:
 |---|---|
 | `file` | Positional name (`0001.wav`, ...). Shifts between calls as recordings qualify; not an identifier |
 | `recording_id` | csv's `recordings.id`; the stable identifier. The client uses this as the ledger key |
-| `original_path` | Stored file path (`/uploads/audio/<uuid>.<ext>`), kept for backward compatibility |
-| `audio_url` | Same value as `original_path` |
+| `original_path` | The raw stored value: a storage key such as `audio/<uuid>.<ext>` (csv with the storage driver, PR #5) or a legacy `/uploads/audio/<uuid>.<ext>` path. Kept for backward compatibility; it is not a fetchable address, and the sync client does not use it when `audio_url` is present |
+| `audio_url` | `/api/export/audio/<recording_id>`: where to fetch the audio (section 1) |
 | `speaker_id` | Pseudonym (section 3), or `null` |
 | `text` | The prompt text that was read (`notation` instead of `text` for music corpora) |
 | `duration` | Seconds, as reported by the browser; nullable and not verified server-side |
@@ -71,26 +74,28 @@ Rows of `{corpus_id, corpus_name, type, total_recordings, exportable_recordings,
 
 ## 3. `speaker_id`
 
-csv derives it in `server/utils/speakerId.js`:
+csv derives it in `server/utils/speakerId.js` (`computeSpeakerId`, csv PR #4):
 
 ```
-speaker_id = first 24 hex characters of HMAC-SHA256(key = SPEAKER_ID_SECRET, message = String(user_id))
+first      = SHA-256( SPEAKER_ID_SALT + ":" + lowercase(trim(email)) )
+speaker_id = SHA-256( SPEAKER_ID_SALT + ":" + first )          -> 64 lowercase hex characters
 ```
 
-- `null` when the recording has no user (anonymised), and `null` for every recording when `SPEAKER_ID_SECRET` is unset or empty: csv fails closed and never falls back to the raw user id. When the secret is unset csv logs one warning per process.
-- Stable per user across corpora and exports, as long as the secret does not change.
-- 24 hex characters, lowercase. It is a pseudonym, not anonymisation (data-protection.md).
+- It is derived from the contributor's **email address**, which is personal data; the id is a salted one-way hash of it, never the email itself. The same email always gives the same id, on any corpus and export, as long as the salt does not change.
+- `null` when the recording has no user or the user has no email (an anonymised recording).
+- `SPEAKER_ID_SALT` unset means an empty salt: csv only logs a warning at startup, and the ids are then a plain double hash that anyone can compute for a known email address. Set it in every environment (see section 5).
+- It is a pseudonym, not anonymisation (data-protection.md).
 
-A one-line check of the derivation, with the secret in the environment (this reproduces csv's function and the Python `hash_speaker_id` in `auditor_stt/dataset/sync.py`, which give the same result for the same key and id):
+A one-line check of the derivation, with the salt in the environment:
 
 ```
-node -e "const c=require('crypto');console.log(c.createHmac('sha256',process.env.SPEAKER_ID_SECRET).update(String(process.argv[1])).digest('hex').slice(0,24))" 42
+node -e "const c=require('crypto');const h=s=>c.createHash('sha256').update(s).digest('hex');const s=process.env.SPEAKER_ID_SALT||'';const e=process.argv[1].trim().toLowerCase();console.log(h(s+':'+h(s+':'+e)))" someone@example.org
 ```
 
 ### What the sync client stores
 
 - A string that is neither all digits nor contains `@` is taken to be csv's pseudonym and stored as given (also when a salt is set).
-- A JSON integer, or an all-digit string of 1 to 18 characters, is taken to be a raw csv user id, which a csv v2 never sends. It is hashed with `AUDITOR_STT_SPEAKER_SALT` (the same construction as above, so a salt equal to csv's secret would give csv's own pseudonyms) or, when the variable is not set, dropped (`raw_speaker_id_dropped`, with a warning in the log). The variable name can be changed with `--speaker-salt-env`. With a v2 export the salt is never used.
+- A JSON integer, or an all-digit string of 1 to 18 characters, is taken to be a raw csv user id, which the current csv export never sends. It is hashed with `AUDITOR_STT_SPEAKER_SALT` (a local HMAC-SHA256, truncated to 24 hex characters; this is not csv's derivation) or, when the variable is not set, dropped (`raw_speaker_id_dropped`, with a warning in the log). The variable name can be changed with `--speaker-salt-env`. With the current csv export the salt is never used.
 - Anything containing `@`, and any value that is not a string or an integer, is dropped (`unusable_speaker_id_dropped`).
 - `null` is stored as speaker-less; such rows are train-only in datasets.
 
@@ -105,7 +110,7 @@ If any row of the export lacks `recording_id`, the client treats the whole listi
 3. On a mismatch it fetches both again once (a recording can cross the validation threshold between the two calls and shift every later name, which would pair one recording's text with another's audio). If they still disagree it aborts with `Export and manifest ... still disagree after a refetch` and stores nothing.
 4. It then takes the identity from the manifest's `id`, the audio path from `source_path`, and the speaker from the row, else from the manifest.
 
-Switching a csv from legacy to v2 needs no re-download: the ids are the same `recordings.id` values and the audio paths are the same (covered by a test). `dataset pull` always uses the manifest pairing, positional names and the same verification, and still works against a v2 export.
+The legacy path only makes sense against an old csv: since csv PR #5 `source_path` is a raw storage key, not something a client can fetch, so a csv that has that change but not the audio route cannot be synced at all. `dataset pull` (always the manifest pairing, positional names and the same verification) has the same limitation and should be regarded as obsolete.
 
 ## 5. csv environment variables
 
@@ -113,30 +118,33 @@ Set in csv's `.env` (see csv's `.env.example` and README):
 
 | Variable | Purpose | Notes |
 |---|---|---|
-| `SPEAKER_ID_SECRET` | Key for the `speaker_id` derivation | Use a long random value (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`). Do not change it after data was exported: every speaker gets a new id, so splits built on earlier exports no longer match, the next sync updates every ledger row to the new ids, and the old ids in earlier dataset versions and lineage records no longer match the ledger. Keep it private: with it and the user table anyone can map a pseudonym to a person. The training system does not need it |
+| `SPEAKER_ID_SALT` | Salt for the `speaker_id` derivation (csv PR #4) | Use a long random value (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`) and set it in EVERY environment: unset means an empty salt and guessable ids, and csv only warns at startup. csv's `.env.example` ships a public placeholder value and its prod/staging examples ship `change-me`: replace them. Do not change it after data was exported: every speaker gets a new id, so splits built on earlier exports no longer match, the next sync updates every ledger row to the new ids, and the old ids in earlier dataset versions and lineage records no longer match the ledger. Keep it private: with the salt and the user table anyone can map a pseudonym to a person. The training system does not need it |
+| `STORAGE_DRIVER` (+ `S3_*`) | Where recordings are stored: `local` (default, `uploads/`) or `s3` (S3/MinIO bucket; csv PR #5) | The audio route reads from whichever is configured. With `s3` and a private bucket, nothing is served from `/uploads` and no presigned URL leaves csv |
 | `EXPORT_API_TOKEN` | Long-lived, read-only bearer token for the three export GET routes | Off when unset or empty (then only admin JWTs work). Cannot use `include_all=true` (403). Grants nothing else: it is not a JWT and is useless on every other route. Use a long random value. Rotating it is safe: change the value, restart csv, update the clients |
 
 ## 6. How the sync client authenticates
 
 - Header: `Authorization: Bearer <value>`, where the value is read from the environment variable named by `--token-env` (default `CSV_ADMIN_TOKEN`). The name is historical: the variable is only a bearer holder. It works with either an admin JWT (an admin account's login token, valid 7 days) or the export token. Use the export token for unattended syncing.
 - If the variable is not set the command stops with `Env var CSV_ADMIN_TOKEN is not set`.
-- The client calls only `/api/export` (json), `/api/export/manifest` (legacy only) and the audio route. It never calls `/api/admin/*`, which return emails and consent timestamps.
-- The same bearer header is sent on the audio download to the same host; csv does not require it there (`/uploads` is public).
+- The client calls only `/api/export` (json), `/api/export/manifest` (legacy only) and `/api/export/audio/:recordingId`. It never calls `/api/admin/*`, which return emails and consent timestamps.
+- The same bearer header is sent on the audio download, and csv requires it there. The export token can only read validated recordings; it cannot use `include_all`.
 - `AUDITOR_STT_SPEAKER_SALT` (section 3) is a separate variable for pseudonymising raw ids, not for authentication.
 
 ## 7. Items for the csv owner (not changed)
 
-Findings from reading the csv code. The csv repository was not modified. Several bear on whether real data may flow (data-protection.md, section 11).
+Findings from reading the csv code (GitHub `main` plus the `export-audio-route` branch). Several bear on whether real data may flow (data-protection.md, section 11).
 
 | # | Finding | Evidence | Effect here |
 |---|---|---|---|
 | 1 | Withdrawal of recording consent is not honoured by the export. `DELETE /api/me/consent/recording` only sets `users.recording_consent_at` to NULL; the export never reads it | `server/routes/user.js`, `server/routes/export.js` | A person who withdraws consent keeps having all recordings exported and synced |
-| 2 | `/uploads` is served without authentication | `server/index.js`: `app.use('/uploads', express.static(...))` | Anyone with a URL can fetch a voice recording. The sync client relies on this route |
+| 2 | `/uploads` is served without authentication (local storage driver), and the export still returns the raw stored path as `original_path` | `server/index.js`: `app.use('/uploads', express.static(...))`; `server/routes/export.js` | The sync client no longer uses this route (it uses the token-gated audio route). With `STORAGE_DRIVER=local`, anyone who knows a recording's path can still fetch it without the validation check, so use the S3 driver with a private bucket for real data |
 | 3 | `language` is free text (`VARCHAR(50)`, only `notEmpty().trim()`), for example `English`, not a code | `server/db/migrate.js`, `server/routes/corpus.js` | The export's `corpus.language` cannot be used as a Whisper language code, so the auditor ignores it |
 | 4 | The privacy policy and terms pages are templates with placeholders: `[DATE]`, `[ORGANIZATION NAME]`, `[CONTACT EMAIL]`, `[ORGANIZATION ADDRESS]`, `[JURISDICTION]`, `[LICENSE TYPE, e.g., CC0, CC-BY, or custom license]`. No data licence is chosen; the consent text has no stored version | `client/src/pages/PrivacyPolicy.jsx`, `TermsOfService.jsx`, `Record.jsx`, `users` table | Blocks real data (data-protection.md) |
 | 5 | `GET /api/validation/flagged` (comment: "for admin review") and `GET /api/recording/:id` require a login but not the admin role, and return `r.*`, including `user_id` and `file_path`, to any logged-in user | `server/routes/validation.js`, `server/routes/recording.js` | Any account holder can learn the user id and audio URL of any recording |
 | 6 | `JWT_SECRET` falls back to a hard-coded string when the environment variable is unset | `server/middleware/auth.js`: `process.env.JWT_SECRET \|\| 'your-secret-key-change-in-production'` | If csv runs without `JWT_SECRET`, anyone who knows that string can mint a token for any user id, including an admin, and reach every admin route (and thereby the export) |
-| 7 | The `format=csv` path of `/api/export` also computes the speaker id for every row (the row list is built before the format is chosen) and logs the missing-secret warning once, although the CSV output has no speaker column | `server/routes/export.js`, `server/utils/speakerId.js` | Informational: a csv-only consumer will see the warning in the log when `SPEAKER_ID_SECRET` is unset |
+| 7 | Upload type check is weak: a file is accepted when its client-declared MIME type is an allowed audio type OR its name ends in `.wav`, and the stored key keeps `path.extname(file.originalname)`. A file named `x.html` uploaded with MIME type `audio/wav` is stored as `audio/<uuid>.html` and, with the local driver, served by the public `/uploads` static mount as HTML | `server/routes/recording.js` (`fileFilter`), `server/utils/storage.js` (`createUploadMiddleware`), `server/index.js` | Stored cross-site scripting on csv's own origin, exploitable by any account that can upload. The export audio route is not affected (fixed content types, `X-Content-Type-Options: nosniff`) |
+| 8 | The global error handler answers 500s with `err.message`, so database and driver errors can leak details (table names, paths, bucket names) on every route except the new audio route, which returns a fixed message | `server/index.js` | Informational; worth fixing before csv is exposed |
+| 9 | `.env.example` ships `SPEAKER_ID_SALT=change-this-salt-in-production` (and the prod/staging examples `change-me`); with that value, or none, the speaker ids can be recomputed from a known email address | `.env.example`, `.env.prod.example`, `.env.staging.example`, `server/utils/speakerId.js` | The pseudonym is only as private as the salt; see section 5 |
 
 Other observations, less important:
 
