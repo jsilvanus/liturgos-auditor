@@ -61,7 +61,7 @@ log "Deploying $NAME at commit $(git rev-parse --short HEAD)"
 
 # --- 2. Settings (first run only) ------------------------------------------------------------------
 if [ ! -f "$ENV_FILE" ] && [ -f "$KEPT_ENV" ]; then
-  log "Restoring settings kept by server-remove.sh ($KEPT_ENV)"
+  log "Restoring settings kept by server-delete.sh ($KEPT_ENV)"
   mv "$KEPT_ENV" "$ENV_FILE"
 fi
 if [ ! -f "$ENV_FILE" ]; then
