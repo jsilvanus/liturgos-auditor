@@ -1,0 +1,47 @@
+# Server deployment behind the host's nginx (scripts/server-deploy.sh).
+# The STT service is published on 127.0.0.1 only, and joins the shared Docker network
+# `deploy-shared` as `liturgos-auditor` so other apps on the host (saarnavideo's worker) reach it at
+# http://liturgos-auditor:8090. Settings come from .env.server (created by the script, never committed):
+#   docker compose -p liturgos-auditor -f docker-compose.server.yml --env-file .env.server ...
+
+services:
+  auditor-stt:
+    build:
+      context: ./python-packages/liturgos-auditor-stt
+      dockerfile: ../../docker/liturgos-auditor-stt/Dockerfile
+    image: liturgos-auditor-stt-server:latest
+    restart: unless-stopped
+    env_file:
+      - .env.server
+    environment:
+      AUDITOR_STT_MODEL_DIR: /models
+      AUDITOR_STT_DATA_DIR: /data
+      AUDITOR_STT_REGISTRY_DIR: /models/registry
+    ports:
+      - "127.0.0.1:${HOST_PORT:-4107}:8090"
+    volumes:
+      - models:/models
+      - data:/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      default: {}
+      shared:
+        aliases: [liturgos-auditor]
+
+volumes:
+  models:
+  data:
+
+networks:
+  shared:
+    name: deploy-shared
+    external: true

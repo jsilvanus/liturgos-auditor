@@ -16,3 +16,5 @@ python-packages/*/models/
 *.ogg
 *.webm
 *.m4a
+# Server deployment settings (scripts/server-deploy.sh)
+.env.server*
