@@ -138,6 +138,8 @@ Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` a
 | `AUDITOR_STT_MAX_QUEUE` | `8` | Live requests allowed in the queue (the running one plus waiting ones) before a new live request is rejected with 503. Batch chunks are not counted and never rejected |
 | `AUDITOR_STT_DATA_DIR` | (none) | Job storage (`<dir>/jobs`). Unset: `/v1/jobs` answers 503. `auditor-stt serve` defaults it to `./data`; the Docker images set `/data` |
 | `AUDITOR_STT_MEDIA_ROOT` | (none) | Directory that `source_path` submissions must point into. Unset: `source_path` is rejected with 422 |
+| `AUDITOR_STT_SOURCE_URL_HOSTS` | (none) | Comma-separated host names (`*` patterns allowed) that `source_url` submissions may be fetched from. Unset: `source_url` is rejected with 422 |
+| `AUDITOR_STT_SOURCE_URL_TIMEOUT` | `300` | Seconds the service waits on the host when fetching a `source_url` |
 | `AUDITOR_STT_MAX_UPLOAD_MB` | `2048` | Size cap (1 MB = 1024 x 1024 bytes) for uploads to `POST /v1/jobs` |
 | `AUDITOR_STT_MAX_LIVE_UPLOAD_MB` | `64` | Size cap for uploads to `POST /inference` and `POST /v1/audio/transcriptions` (live routes) |
 | `AUDITOR_STT_JOB_TTL_HOURS` | `72` | How long a finished job (completed, failed or cancelled) and its result are kept before they are purged (checked at startup and hourly) |

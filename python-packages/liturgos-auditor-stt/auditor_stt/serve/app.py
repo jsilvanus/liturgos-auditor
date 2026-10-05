@@ -169,6 +169,11 @@ def create_app(
     media_root = media_root or os.environ.get("AUDITOR_STT_MEDIA_ROOT") or None
     app.state.media_root = Path(media_root).resolve() if media_root else None
     app.state.max_upload_bytes = int(float(os.environ.get("AUDITOR_STT_MAX_UPLOAD_MB", "2048")) * 1024 * 1024)
+    # `source_url` submissions are only fetched from these hosts (fnmatch patterns, comma separated); unset disables them.
+    app.state.source_url_hosts = [
+        host.strip().lower() for host in os.environ.get("AUDITOR_STT_SOURCE_URL_HOSTS", "").split(",") if host.strip()
+    ]
+    app.state.source_url_timeout = float(os.environ.get("AUDITOR_STT_SOURCE_URL_TIMEOUT", "300"))
     app.add_middleware(UploadGuard)
 
     protected = [Depends(require_api_key)]
