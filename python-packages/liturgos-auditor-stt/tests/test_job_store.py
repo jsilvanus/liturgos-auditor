@@ -77,7 +77,7 @@ def test_create_with_explicit_id_and_source_validation(store):
     with pytest.raises(FileExistsError):
         store.create(params={}, source={"kind": "upload", "path": None}, job_id=job_id)
     with pytest.raises(ValueError, match="source kind"):
-        store.create(params={}, source={"kind": "url", "path": "http://x"})
+        store.create(params={}, source={"kind": "ftp", "path": "http://x"})
 
 
 def test_load_unknown_job(store):

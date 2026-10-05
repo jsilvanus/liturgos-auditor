@@ -38,6 +38,16 @@ curl -X POST http://localhost:8090/v1/jobs \
 
 The service downloads the file into the job's directory before it answers, so the caller does not upload anything (a presigned S3 URL works). Only hosts listed in `AUDITOR_STT_SOURCE_URL_HOSTS` are fetched: comma-separated host names, `*` patterns allowed (for example `s3.example.com,*.amazonaws.com`). Without the setting `source_url` is rejected with 422. Only `http` and `https` URLs without credentials are accepted, redirects are not followed, and the size cap is the same as for uploads (`AUDITOR_STT_MAX_UPLOAD_MB`, 413). A URL the service cannot use, a host that is not listed and a failed fetch all answer 422 with a short message. Like an upload, the fetched copy is removed when the job ends.
 
+### Stripping the audio on an fffleet worker
+
+`source_url` may point at a full video. By default the service downloads it and extracts the audio with its own ffmpeg. With `AUDITOR_STT_STRIP=fleet` the service does not download the file at all: it submits an [fffleet](https://github.com/jsilvanus/fffleet) batch job (`ffmpeg -i <url> -vn -ac 1 -ar 16000 -c:a pcm_s16le`) whose input is the URL and whose output is an HTTP PUT back to the service. Only the 16 kHz mono WAV (about 115 MB per hour) reaches the service, and the machine running the model needs no ffmpeg and no bandwidth for the video.
+
+- The fleet job id is `auditor-strip-<job id>`, so a service restart resubmits to the same fleet job. A restart after the audio arrived just carries on.
+- The worker uploads to `PUT /v1/jobs/{id}/audio?token=...` on `AUDITOR_STT_PUBLIC_URL`. The token is generated per job, accepted for one upload while the job waits for its audio, and removed from the job's manifest once the audio has arrived (the source URL is removed too, as it may carry a signature). The upload is size-capped (`AUDITOR_STT_MAX_INGEST_MB`) and must be a 16-bit PCM mono WAV (422 otherwise). The route does not use the API key, because fleet workers do not hold one; the token is the authorisation.
+- The URL and the host check stay as above: the service validates `source_url` against `AUDITOR_STT_SOURCE_URL_HOSTS` before the fleet sees it. Redirect behaviour on the worker side is the worker's (fffleet fetches inputs with its normal HTTP client).
+- If the fleet cannot be reached, the service strips locally as before (fetch, then its own ffmpeg) unless `AUDITOR_STT_FLEET_FALLBACK=off`, in which case the job fails with "The fleet is unavailable". A fleet job that ran and failed (for example unreadable media) fails the job; the message never contains the URL.
+- Uploads and `source_path` jobs are not affected: their file is already here.
+
 ## Submission parameters
 
 | Field | Type | Default | Notes |

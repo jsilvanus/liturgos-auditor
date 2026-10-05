@@ -14,13 +14,12 @@ read by serve/limits.py, because FastAPI parses the body first.
 
 import asyncio
 import fnmatch
+import secrets
 import re
 import shutil
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote, urlsplit
-
-import httpx
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -29,6 +28,9 @@ from starlette.convertors import Convertor, register_url_convertor
 from ...captions import make_cues, parse_start_time, to_srt, to_text, to_vtt, to_youtube
 from .assemble import IncompleteJobError, assemble, progress
 from .chunking import MAX_CHUNK_SECONDS, MIN_CHUNK_SECONDS
+from .fetch import FetchError as _FetchError
+from .fetch import UploadTooLargeError as _UploadTooLargeError
+from .fetch import fetch_url as _fetch_url
 from .store import STATUSES, JobNotFoundError
 
 JOBS_NOT_CONFIGURED = "Jobs are not configured (set AUDITOR_STT_DATA_DIR)"
@@ -149,10 +151,6 @@ def _safe_name(filename):
     return f"_{name}" if _RESERVED_NAMES.match(name) else name
 
 
-class _UploadTooLargeError(Exception):
-    pass
-
-
 class _CappedReader:
     """File wrapper for copyfileobj that fails once more than `limit` bytes were read."""
 
@@ -201,29 +199,6 @@ def _check_source_url(allowed_hosts, value):
     return parts.geturl(), (unquote(Path(parts.path).name) if parts.path else "")
 
 
-class _FetchError(Exception):
-    pass
-
-
-def _fetch_url(url, target, limit, timeout):
-    """Stream `url` into `target`; no redirects are followed. Returns the size in bytes."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    size = 0
-    try:
-        with httpx.stream("GET", url, follow_redirects=False, timeout=timeout) as response:
-            if response.status_code != 200:
-                raise _FetchError(f"source_url answered {response.status_code}")
-            with open(target, "wb") as out:
-                for chunk in response.iter_bytes(1024 * 1024):
-                    size += len(chunk)
-                    if size > limit:
-                        raise _UploadTooLargeError()
-                    out.write(chunk)
-    except httpx.HTTPError:
-        raise _FetchError("source_url could not be fetched") from None
-    return size
-
-
 def _repair_offset(value):
     # An unencoded "+02:00" in a query string arrives as " 02:00".
     return re.sub(r" (\d\d:\d\d)$", r"+\1", value.strip())
@@ -265,6 +240,10 @@ async def submit_job(
     }
     if resolved is not None:
         manifest = await asyncio.to_thread(store.create, params=params, source={"kind": "path", "path": resolved})
+    elif fetch is not None and runner.strip_on_fleet:
+        # A fleet worker fetches the file and sends back only the stripped audio (jobs/fleet.py).
+        source = {"kind": "url", "path": None, "url": fetch[0], "ingest_token": secrets.token_urlsafe(24)}
+        manifest = await asyncio.to_thread(store.create, params=params, source=source)
     elif fetch is not None:
         manifest = await _create_from_url(state, params, *fetch)
     else:
