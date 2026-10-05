@@ -146,6 +146,14 @@ Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` a
 | `AUDITOR_STT_PUBLIC_URL` | (none) | How fleet workers reach this service; the stripped audio is PUT to `<url>/v1/jobs/{id}/audio` |
 | `AUDITOR_STT_FLEET_FALLBACK` | `on` | `off`: fail the job instead of stripping locally when the fleet is unreachable |
 | `AUDITOR_STT_FLEET_POLL_SECONDS` / `AUDITOR_STT_FLEET_TIMEOUT_SECONDS` | `2` / `21600` | Fleet job polling interval and the longest a strip may take |
+| `AUDITOR_STT_LIVE_SOURCE_HOSTS` | (none) | Comma-separated host names (`*` patterns allowed) that live sessions may pull from. Unset: `/v1/live` is off ([details](docs/live-sessions.md)) |
+| `AUDITOR_STT_LIVE_REQUIRES` | (none) | fffleet capabilities a live stream job needs, e.g. `net:mediamtx` |
+| `AUDITOR_STT_MAX_LIVE_SESSIONS` | `2` | Concurrent live sessions (one model is shared) |
+| `AUDITOR_STT_LIVE_RECONNECT_SECONDS` | `120` | How long a session keeps retrying a lost stream before it ends |
+| `AUDITOR_STT_LIVE_MAX_SEGMENT_SECONDS` / `_PAUSE_SECONDS` | `10` / `0.6` | Longest segment, and the pause that ends one |
+| `AUDITOR_STT_LIVE_MAX_LAG_SECONDS` | `30` | A segment still waiting for the model after this long is dropped (status event) |
+| `AUDITOR_STT_LIVE_CLOCK_DRIFT_SECONDS` | `1` | Drift between stream position and wall time that moves the clock anchor |
+| `AUDITOR_STT_LIVE_READ_TIMEOUT` | `120` | Seconds without PCM from the fleet before the stream counts as lost |
 | `AUDITOR_STT_MAX_INGEST_MB` | `4096` | Size cap for the WAV a fleet worker sends back |
 | `AUDITOR_STT_MAX_UPLOAD_MB` | `2048` | Size cap (1 MB = 1024 x 1024 bytes) for uploads to `POST /v1/jobs` |
 | `AUDITOR_STT_MAX_LIVE_UPLOAD_MB` | `64` | Size cap for uploads to `POST /inference` and `POST /v1/audio/transcriptions` (live routes) |
