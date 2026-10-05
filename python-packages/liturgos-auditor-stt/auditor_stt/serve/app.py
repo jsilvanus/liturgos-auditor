@@ -39,6 +39,8 @@ from .auth import require_api_key
 from .jobs.api import router as jobs_router
 from .jobs.fleet import FleetConfig, FleetStripper
 from .jobs.ingest import router as ingest_router
+from .live.api import router as live_router
+from .live.session import LiveConfig, LiveManager
 from .jobs.runner import JobRunner
 from .jobs.store import JobStore
 from .limits import UploadGuard
@@ -97,6 +99,21 @@ def _runner_options():
     return options
 
 
+def _live_manager(app):
+    """Live sessions (pull type) are on only when AUDITOR_STT_LIVE_SOURCE_HOSTS names hosts to pull from."""
+    config = LiveConfig.from_env()
+    if not config.source_hosts:
+        return None
+    fleet_config = FleetConfig.from_env()
+    return LiveManager(
+        config,
+        lambda: app.state.model_host,
+        app.state.queue,
+        fleet=FleetStripper(fleet_config) if fleet_config.enabled else None,
+        fleet_fallback=fleet_config.fallback,
+    )
+
+
 def create_app(
     model_host: Optional[ModelHost] = None,
     queue: Optional[InferenceQueue] = None,
@@ -108,6 +125,7 @@ def create_app(
     host_factory=None,
     registry_dir=None,
     allowed_models=None,
+    live: Optional[LiveManager] = None,
 ) -> FastAPI:
     # `host_factory(model_id)` builds an unloaded host; tests inject stubs through it, both for
     # the startup model and for POST /model.
@@ -151,6 +169,8 @@ def create_app(
         if app.state.job_runner is not None:
             await app.state.job_runner.start()
         yield
+        if app.state.live is not None:
+            await app.state.live.shutdown()
         if app.state.job_runner is not None:
             await app.state.job_runner.stop()
 
@@ -179,6 +199,7 @@ def create_app(
         runner = JobRunner(job_store, lambda: app.state.model_host, app.state.queue, **_runner_options())
     app.state.job_store = job_store
     app.state.job_runner = runner
+    app.state.live = live or _live_manager(app)
     # `source_path` submissions are only accepted under this directory; unset disables them.
     media_root = media_root or os.environ.get("AUDITOR_STT_MEDIA_ROOT") or None
     app.state.media_root = Path(media_root).resolve() if media_root else None
@@ -351,6 +372,7 @@ def create_app(
     # Routers for jobs and the model registry are included here, behind the API key:
     #   app.include_router(router, dependencies=protected)
     app.include_router(jobs_router, dependencies=protected)
+    app.include_router(live_router, dependencies=protected)
     # Authorised by the per-job token in the URL, not the API key: fleet workers do not hold one.
     app.include_router(ingest_router)
 
