@@ -24,7 +24,7 @@ Manifest (times are ISO-8601 UTC strings, null until known):
                       started_at is when the CURRENT run began (reset on
                       every transition to running, cleared on requeue)
     params            {language, chunk_seconds, word_timestamps, prompt, client_ref}
-    source            {kind: "upload" | "path", path}
+    source            {kind: "upload" | "path" | "url", path, url?, ingest_token?}
     audio             {wav_path, duration_seconds, sample_rate} | null
     chunks            [{index, start_sample, end_sample, start, end, snapped}] | null
                       the persisted plan; never recomputed on resume
@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 STATUSES = ("queued", "running", "completed", "failed", "cancelled")
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
-SOURCE_KINDS = ("upload", "path")
+SOURCE_KINDS = ("upload", "path", "url")
 
 DEFAULT_PARAMS = {
     "language": "fi",
@@ -191,7 +191,12 @@ class JobStore:
             "started_at": None,
             "finished_at": None,
             "params": {**DEFAULT_PARAMS, **params},
-            "source": {"kind": source["kind"], "path": None if source.get("path") is None else str(source["path"])},
+            "source": {
+                "kind": source["kind"],
+                "path": None if source.get("path") is None else str(source["path"]),
+                # kind "url": the file is stripped elsewhere and arrives as audio.wav (see fleet.py)
+                **{key: source[key] for key in ("url", "ingest_token") if source.get(key)},
+            },
             "audio": None,
             "chunks": None,
             "current_seconds": 0.0,

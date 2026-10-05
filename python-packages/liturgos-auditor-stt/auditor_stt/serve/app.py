@@ -37,6 +37,8 @@ from pydantic import BaseModel, Field
 from .audio import temp_audio_file
 from .auth import require_api_key
 from .jobs.api import router as jobs_router
+from .jobs.fleet import FleetConfig, FleetStripper
+from .jobs.ingest import router as ingest_router
 from .jobs.runner import JobRunner
 from .jobs.store import JobStore
 from .limits import UploadGuard
@@ -81,6 +83,18 @@ def _use_label(host, label):
     ModelHost loads by `model_id`, so the label can only replace the path once loading is done.
     """
     host.model_id = label
+
+
+def _runner_options():
+    """Job runner settings read from the environment: where audio is stripped, and the limits of the local fallback."""
+    config = FleetConfig.from_env()
+    options = {
+        "fetch_limit": int(float(os.environ.get("AUDITOR_STT_MAX_UPLOAD_MB", "2048")) * 1024 * 1024),
+        "fetch_timeout": float(os.environ.get("AUDITOR_STT_SOURCE_URL_TIMEOUT", "300")),
+    }
+    if config.enabled:
+        options.update(fleet=FleetStripper(config), public_url=config.public_url, fleet_fallback=config.fallback)
+    return options
 
 
 def create_app(
@@ -162,7 +176,7 @@ def create_app(
     if job_store is None and data_dir:
         job_store = JobStore(Path(data_dir) / "jobs")
     if job_store is not None and runner is None:
-        runner = JobRunner(job_store, lambda: app.state.model_host, app.state.queue)
+        runner = JobRunner(job_store, lambda: app.state.model_host, app.state.queue, **_runner_options())
     app.state.job_store = job_store
     app.state.job_runner = runner
     # `source_path` submissions are only accepted under this directory; unset disables them.
@@ -174,6 +188,8 @@ def create_app(
         host.strip().lower() for host in os.environ.get("AUDITOR_STT_SOURCE_URL_HOSTS", "").split(",") if host.strip()
     ]
     app.state.source_url_timeout = float(os.environ.get("AUDITOR_STT_SOURCE_URL_TIMEOUT", "300"))
+    # Audio sent back by fleet workers (AUDITOR_STT_STRIP=fleet) is 16 kHz mono PCM16, about 115 MB per hour.
+    app.state.max_ingest_bytes = int(float(os.environ.get("AUDITOR_STT_MAX_INGEST_MB", "4096")) * 1024 * 1024)
     app.add_middleware(UploadGuard)
 
     protected = [Depends(require_api_key)]
@@ -335,6 +351,8 @@ def create_app(
     # Routers for jobs and the model registry are included here, behind the API key:
     #   app.include_router(router, dependencies=protected)
     app.include_router(jobs_router, dependencies=protected)
+    # Authorised by the per-job token in the URL, not the API key: fleet workers do not hold one.
+    app.include_router(ingest_router)
 
     return app
 

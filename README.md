@@ -140,6 +140,13 @@ Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` a
 | `AUDITOR_STT_MEDIA_ROOT` | (none) | Directory that `source_path` submissions must point into. Unset: `source_path` is rejected with 422 |
 | `AUDITOR_STT_SOURCE_URL_HOSTS` | (none) | Comma-separated host names (`*` patterns allowed) that `source_url` submissions may be fetched from. Unset: `source_url` is rejected with 422 |
 | `AUDITOR_STT_SOURCE_URL_TIMEOUT` | `300` | Seconds the service waits on the host when fetching a `source_url` |
+| `AUDITOR_STT_STRIP` | `local` | `fleet` makes `source_url` jobs strip their audio on an fffleet worker instead of downloading the file here ([details](docs/batch-jobs.md#stripping-the-audio-on-an-fffleet-worker)). Needs `AUDITOR_STT_FLEET_URL` and `AUDITOR_STT_PUBLIC_URL` |
+| `AUDITOR_STT_FLEET_URL` | (none) | Base URL of the fffleet orchestrator (or a single worker) |
+| `AUDITOR_STT_FLEET_TOKEN` / `AUDITOR_STT_FLEET_CLIENT_ID` + `AUDITOR_STT_FLEET_CLIENT_SECRET` | (none) | A static bearer token, or OAuth2 client credentials (scope `jobs`) for the fleet |
+| `AUDITOR_STT_PUBLIC_URL` | (none) | How fleet workers reach this service; the stripped audio is PUT to `<url>/v1/jobs/{id}/audio` |
+| `AUDITOR_STT_FLEET_FALLBACK` | `on` | `off`: fail the job instead of stripping locally when the fleet is unreachable |
+| `AUDITOR_STT_FLEET_POLL_SECONDS` / `AUDITOR_STT_FLEET_TIMEOUT_SECONDS` | `2` / `21600` | Fleet job polling interval and the longest a strip may take |
+| `AUDITOR_STT_MAX_INGEST_MB` | `4096` | Size cap for the WAV a fleet worker sends back |
 | `AUDITOR_STT_MAX_UPLOAD_MB` | `2048` | Size cap (1 MB = 1024 x 1024 bytes) for uploads to `POST /v1/jobs` |
 | `AUDITOR_STT_MAX_LIVE_UPLOAD_MB` | `64` | Size cap for uploads to `POST /inference` and `POST /v1/audio/transcriptions` (live routes) |
 | `AUDITOR_STT_JOB_TTL_HOURS` | `72` | How long a finished job (completed, failed or cancelled) and its result are kept before they are purged (checked at startup and hourly) |

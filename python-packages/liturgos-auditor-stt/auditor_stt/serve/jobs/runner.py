@@ -31,6 +31,8 @@ from ..audio import MediaDecodeError, NormalizationCancelledError, normalize_to_
 from .chunking import Chunk
 from .pipeline import plan_job_chunks, transcribe_chunk
 from .store import TERMINAL_STATUSES, JobNotFoundError
+from .fetch import FetchError, UploadTooLargeError, fetch_url
+from .fleet import FleetJobError, FleetUnavailableError
 from .wav import open_pcm16_mono
 
 logger = logging.getLogger(__name__)
@@ -92,8 +94,29 @@ class _Run:
 class JobRunner:
     """`get_host()` is called before every chunk, so a model hot-swap is picked up between chunks."""
 
-    def __init__(self, store, get_host, queue, config=None, *, normalize=normalize_to_wav, find_gap=None):
+    def __init__(
+        self,
+        store,
+        get_host,
+        queue,
+        config=None,
+        *,
+        normalize=normalize_to_wav,
+        find_gap=None,
+        fleet=None,
+        public_url="",
+        fleet_fallback=True,
+        fetch_limit=2048 * 1024 * 1024,
+        fetch_timeout=300.0,
+    ):
         self.store = store
+        # `fleet` (a FleetStripper) strips the audio of kind-"url" sources on a fleet worker; without it,
+        # or when the fleet cannot be reached and `fleet_fallback` is set, the file is fetched and stripped here.
+        self._fleet = fleet
+        self._public_url = public_url
+        self._fleet_fallback = fleet_fallback
+        self._fetch_limit = fetch_limit
+        self._fetch_timeout = fetch_timeout
         self.config = config or RunnerConfig.from_env()
         self._get_host = get_host
         self._queue = queue
@@ -307,8 +330,15 @@ class JobRunner:
         if run.cancel.is_set() or await asyncio.to_thread(self.store.cancel_requested, run.job_id):
             raise _JobCancelled()
 
+    @property
+    def strip_on_fleet(self):
+        return self._fleet is not None
+
     async def _normalise(self, run, manifest, wav_path):
         source = manifest.get("source") or {}
+        if source.get("kind") == "url":
+            await self._normalise_url(run, manifest, wav_path)
+            return
         if not source.get("path"):
             # An upload is recorded in the manifest only once it was fully received.
             raise _JobFailed("The upload did not complete" if source.get("kind") == "upload" else "Job has no source")
@@ -318,6 +348,46 @@ class JobRunner:
             raise _JobCancelled() from None
         except MediaDecodeError as exc:
             raise _JobFailed(str(exc)) from exc
+
+    async def _normalise_url(self, run, manifest, wav_path):
+        """The audio of a source_url job: stripped on the fleet, or fetched and stripped here."""
+        job_id = run.job_id
+        source = manifest.get("source") or {}
+        if wav_path.is_file():  # delivered by an earlier run that stopped before it read the file
+            return
+        if self._fleet is not None and source.get("url") and source.get("ingest_token"):
+            ingest_url = f"{self._public_url}/v1/jobs/{job_id}/audio?token={source['ingest_token']}"
+            try:
+                await asyncio.to_thread(self._fleet.strip, job_id, source["url"], ingest_url, cancel=run.cancel)
+            except NormalizationCancelledError:
+                raise _JobCancelled() from None
+            except FleetJobError as exc:
+                raise _JobFailed(str(exc)) from exc
+            except FleetUnavailableError as exc:
+                if not self._fleet_fallback:
+                    raise _JobFailed(f"The fleet is unavailable: {exc}") from exc
+                logger.warning("Job %s: %s; stripping the audio locally", job_id, exc)
+            else:
+                if not wav_path.is_file():
+                    raise _JobFailed("The fleet finished but the audio did not arrive")
+                await asyncio.to_thread(self.store.update, job_id, source={"kind": "url", "path": None})
+                return
+        if not source.get("url"):
+            raise _JobFailed("Job has no source")
+        target = self.store.source_dir(job_id) / "source"
+        try:
+            await asyncio.to_thread(fetch_url, source["url"], target, self._fetch_limit, self._fetch_timeout)
+        except UploadTooLargeError:
+            raise _JobFailed("The source file is too large") from None
+        except FetchError as exc:
+            raise _JobFailed(str(exc)) from exc
+        try:
+            await asyncio.to_thread(self._normalize, str(target), wav_path, cancel=run.cancel)
+        except NormalizationCancelledError:
+            raise _JobCancelled() from None
+        except MediaDecodeError as exc:
+            raise _JobFailed(str(exc)) from exc
+        await asyncio.to_thread(self.store.update, job_id, source={"kind": "url", "path": None})
 
     async def _plan(self, run, manifest, params):
         """The persisted chunk plan, made now if this is the job's first run."""
