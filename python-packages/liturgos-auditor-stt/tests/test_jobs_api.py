@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -73,6 +74,7 @@ def _clean_environment(monkeypatch):
     for name in (
         "AUDITOR_STT_DATA_DIR",
         "AUDITOR_STT_MEDIA_ROOT",
+        "AUDITOR_STT_SOURCE_URL_HOSTS",
         "AUDITOR_STT_API_KEY",
         "AUDITOR_STT_MAX_UPLOAD_MB",
         "AUDITOR_STT_DEFAULT_LANGUAGE",
@@ -197,8 +199,8 @@ def test_source_path_is_resolved_under_the_media_root(tmp_path):
 @pytest.mark.parametrize(
     "fields, expected",
     [
-        ({}, "Provide exactly one of 'file' or 'source_path'"),
-        ({"source_path": ""}, "Provide exactly one of 'file' or 'source_path'"),
+        ({}, "Provide exactly one of 'file', 'source_path' or 'source_url'"),
+        ({"source_path": ""}, "Provide exactly one of 'file', 'source_path' or 'source_url'"),
     ],
 )
 def test_exactly_one_input_is_required(tmp_path, fields, expected):
@@ -904,3 +906,92 @@ async def _raw_post(app, headers, body_chunks=()):
         "headers": {name.decode(): value.decode() for name, value in start["headers"]},
         "body_reads": reads,
     }
+
+
+# --- source_url ------------------------------------------------------------
+
+
+@contextmanager
+def _file_server(routes):
+    """Serves {path: (status, body, headers)} on 127.0.0.1 and yields the base URL."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            status, body, headers = routes.get(self.path.split("?")[0], (404, b"", {}))
+            self.send_response(status)
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _submit_url(svc, url, **fields):
+    return svc.client.post("/v1/jobs", data={"source_url": url, **FIVE, **fields})
+
+
+def test_source_url_is_fetched_from_an_allowed_host(tmp_path):
+    body = _wav_bytes(tmp_path, 30)
+    with _file_server({"/bucket/talk.wav": (200, body, {})}) as base, _service(tmp_path) as svc:
+        svc.app.state.source_url_hosts = ["127.0.0.1"]
+        response = _submit_url(svc, f"{base}/bucket/talk.wav?X-Amz-Signature=abc", language="en")
+        assert response.status_code == 202, response.text
+        job = _wait_done(svc, response.json()["id"])
+        assert job["status"] == "completed"
+        assert job["chunks_total"] == 6
+        # Like an upload, the fetched copy is removed when the job ends.
+        assert not list(svc.store.source_dir(response.json()["id"]).glob("*"))
+
+
+def test_source_url_is_disabled_without_host_list(tmp_path):
+    with _service(tmp_path) as svc:
+        response = _submit_url(svc, "http://127.0.0.1:9/talk.wav")
+        assert response.status_code == 422
+        assert "AUDITOR_STT_SOURCE_URL_HOSTS" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://other.example/talk.wav",  # host not listed
+        "ftp://127.0.0.1/talk.wav",
+        "file:///etc/passwd",
+        "http://user:pw@127.0.0.1/talk.wav",
+        "http://127.0.0.1:notaport/talk.wav",
+        "not a url",
+    ],
+)
+def test_source_url_refuses_unlisted_or_odd_urls(tmp_path, url):
+    with _service(tmp_path) as svc:
+        svc.app.state.source_url_hosts = ["127.0.0.1"]
+        response = _submit_url(svc, url)
+        assert response.status_code == 422, url
+        assert not list((tmp_path / "data" / "jobs").glob("*"))
+
+
+def test_source_url_failures_leave_no_job(tmp_path):
+    routes = {
+        "/redirect": (302, b"", {"Location": "http://169.254.169.254/latest/meta-data"}),
+        "/empty": (200, b"", {}),
+        "/big": (200, b"x" * 2048, {}),
+    }
+    with _file_server(routes) as base, _service(tmp_path, upload_cap=1024) as svc:
+        svc.app.state.source_url_hosts = ["127.0.0.1"]
+        assert _submit_url(svc, f"{base}/missing").status_code == 422  # 404 from the server
+        assert _submit_url(svc, f"{base}/redirect").status_code == 422  # redirects are not followed
+        assert _submit_url(svc, f"{base}/empty").status_code == 422
+        assert _submit_url(svc, f"{base}/big").status_code == 413
+        assert _submit_url(svc, "http://127.0.0.1:1/unreachable.wav").status_code == 422
+        assert not list((tmp_path / "data" / "jobs").glob("*"))

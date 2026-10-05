@@ -1,6 +1,6 @@
 """HTTP API for batch jobs, mounted under /v1/jobs.
 
-    POST   /v1/jobs               submit a file (upload or a path on the media volume)
+    POST   /v1/jobs               submit a file (upload, a path on the media volume, or a URL to fetch)
     GET    /v1/jobs               list, filterable by client_ref / status
     GET    /v1/jobs/{id}          status and progress
     GET    /v1/jobs/{id}/result   the transcript as json, vtt, srt, text or youtube
@@ -13,10 +13,14 @@ read by serve/limits.py, because FastAPI parses the body first.
 """
 
 import asyncio
+import fnmatch
 import re
 import shutil
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote, urlsplit
+
+import httpx
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -171,6 +175,55 @@ def _save_upload(file, target, limit):
     return target.stat().st_size
 
 
+def _bad_url(detail="source_url could not be used"):
+    return HTTPException(status_code=422, detail=detail)
+
+
+def _check_source_url(allowed_hosts, value):
+    """The URL, if `AUDITOR_STT_SOURCE_URL_HOSTS` allows its host; 422 otherwise.
+
+    The service fetches the URL itself, so the operator's host list is the only thing keeping this
+    from reaching arbitrary addresses. Only http(s) URLs without credentials are accepted, and a
+    host that is not listed gets the same answer as any other unusable URL.
+    """
+    if not allowed_hosts:
+        raise _bad_url("source_url is not enabled (set AUDITOR_STT_SOURCE_URL_HOSTS)")
+    try:
+        parts = urlsplit(value.strip())
+        host = (parts.hostname or "").lower()
+        port = parts.port  # raises ValueError for a malformed port
+    except ValueError:
+        raise _bad_url() from None
+    if parts.scheme not in ("http", "https") or not host or parts.username or parts.password:
+        raise _bad_url()
+    if not any(fnmatch.fnmatchcase(host, pattern) for pattern in allowed_hosts):
+        raise _bad_url()
+    return parts.geturl(), (unquote(Path(parts.path).name) if parts.path else "")
+
+
+class _FetchError(Exception):
+    pass
+
+
+def _fetch_url(url, target, limit, timeout):
+    """Stream `url` into `target`; no redirects are followed. Returns the size in bytes."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    size = 0
+    try:
+        with httpx.stream("GET", url, follow_redirects=False, timeout=timeout) as response:
+            if response.status_code != 200:
+                raise _FetchError(f"source_url answered {response.status_code}")
+            with open(target, "wb") as out:
+                for chunk in response.iter_bytes(1024 * 1024):
+                    size += len(chunk)
+                    if size > limit:
+                        raise _UploadTooLargeError()
+                    out.write(chunk)
+    except httpx.HTTPError:
+        raise _FetchError("source_url could not be fetched") from None
+    return size
+
+
 def _repair_offset(value):
     # An unencoded "+02:00" in a query string arrives as " 02:00".
     return re.sub(r" (\d\d:\d\d)$", r"+\1", value.strip())
@@ -184,6 +237,7 @@ async def submit_job(
     request: Request,
     file: Optional[UploadFile] = File(None),
     source_path: Optional[str] = Form(None),
+    source_url: Optional[str] = Form(None),
     language: Optional[str] = Form(None),
     chunk_seconds: float = Form(60.0, ge=MIN_CHUNK_SECONDS, le=MAX_CHUNK_SECONDS),
     word_timestamps: bool = Form(True),
@@ -192,10 +246,13 @@ async def submit_job(
 ):
     state = request.app.state
     store, runner = state.job_store, state.job_runner
-    if (file is not None) == bool(source_path):
-        raise HTTPException(status_code=422, detail="Provide exactly one of 'file' or 'source_path'")
+    if (file is not None) + bool(source_path) + bool(source_url) != 1:
+        raise HTTPException(status_code=422, detail="Provide exactly one of 'file', 'source_path' or 'source_url'")
 
     resolved = None
+    fetch = None
+    if source_url:
+        fetch = _check_source_url(state.source_url_hosts, source_url)
     if source_path:
         resolved = await asyncio.to_thread(_resolve_source, state.media_root, source_path)
 
@@ -208,6 +265,8 @@ async def submit_job(
     }
     if resolved is not None:
         manifest = await asyncio.to_thread(store.create, params=params, source={"kind": "path", "path": resolved})
+    elif fetch is not None:
+        manifest = await _create_from_url(state, params, *fetch)
     else:
         manifest = await _create_from_upload(state, params, file)
 
@@ -236,6 +295,29 @@ async def _create_from_upload(state, params, file):
         raise HTTPException(status_code=413, detail=f"Upload is too large (limit is {limit_mb:g} MB)") from None
     except BaseException:
         await asyncio.to_thread(store.delete, job_id)  # never leave a partial upload behind
+        raise
+
+
+async def _create_from_url(state, params, url, name):
+    """Like an upload: the file is fetched into the job's source directory and removed when the job ends."""
+    store = state.job_store
+    manifest = await asyncio.to_thread(store.create, params=params, source={"kind": "upload", "path": None})
+    job_id = manifest["id"]
+    target = store.source_dir(job_id) / _safe_name(name or "source")
+    try:
+        size = await asyncio.to_thread(_fetch_url, url, target, state.max_upload_bytes, state.source_url_timeout)
+        if size == 0:
+            raise HTTPException(status_code=422, detail="The fetched file is empty")
+        return await asyncio.to_thread(store.update, job_id, source={"kind": "upload", "path": str(target)})
+    except _UploadTooLargeError:
+        await asyncio.to_thread(store.delete, job_id)
+        limit_mb = state.max_upload_bytes / (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"The file is too large (limit is {limit_mb:g} MB)") from None
+    except _FetchError as exc:
+        await asyncio.to_thread(store.delete, job_id)
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except BaseException:
+        await asyncio.to_thread(store.delete, job_id)
         raise
 
 

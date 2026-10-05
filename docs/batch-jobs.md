@@ -1,6 +1,6 @@
 # Batch Jobs API
 
-The `/v1/jobs` API transcribes full audio and video files in checkpointed chunks. Every finished chunk is written to disk, so an abort or restart does not lose the work. Jobs are submitted by file upload or by a path under the server's media root, run asynchronously (one job at a time, in submission order), and are polled for status and results.
+The `/v1/jobs` API transcribes full audio and video files in checkpointed chunks. Every finished chunk is written to disk, so an abort or restart does not lose the work. Jobs are submitted by file upload, by a path under the server's media root, or by a URL the server fetches itself, run asynchronously (one job at a time, in submission order), and are polled for status and results.
 
 The API needs a data directory on the server (`AUDITOR_STT_DATA_DIR`). Without one every `/v1/jobs` route answers `503`. `auditor-stt serve` and the Docker images set it by default; see the [README](../README.md#environment-variables).
 
@@ -27,12 +27,24 @@ curl -X POST http://localhost:8090/v1/jobs \
   -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
+### Fetch a URL
+
+```bash
+curl -X POST http://localhost:8090/v1/jobs \
+  -F "source_url=https://storage.example.com/bucket/sermon.wav?X-Amz-Signature=..." \
+  -F "language=fi" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+The service downloads the file into the job's directory before it answers, so the caller does not upload anything (a presigned S3 URL works). Only hosts listed in `AUDITOR_STT_SOURCE_URL_HOSTS` are fetched: comma-separated host names, `*` patterns allowed (for example `s3.example.com,*.amazonaws.com`). Without the setting `source_url` is rejected with 422. Only `http` and `https` URLs without credentials are accepted, redirects are not followed, and the size cap is the same as for uploads (`AUDITOR_STT_MAX_UPLOAD_MB`, 413). A URL the service cannot use, a host that is not listed and a failed fetch all answer 422 with a short message. Like an upload, the fetched copy is removed when the job ends.
+
 ## Submission parameters
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `file` | File | — | Multipart file upload; exactly one of `file` or `source_path` is required (otherwise 422) |
+| `file` | File | — | Multipart file upload; exactly one of `file`, `source_path` or `source_url` is required (otherwise 422) |
 | `source_path` | string | — | Path of an existing file on the **server**, inside `AUDITOR_STT_MEDIA_ROOT`. An absolute path must lie under the media root; a relative path is resolved against it. Symlinks and `..` are resolved first and cannot lead out of the root. Anything else answers 422 with the same message, so it does not reveal whether a file exists elsewhere. 422 as well when `AUDITOR_STT_MEDIA_ROOT` is not set |
+| `source_url` | string | — | `http(s)` URL the service fetches itself. The host must be listed in `AUDITOR_STT_SOURCE_URL_HOSTS`; unset: 422. See [Fetch a URL](#fetch-a-url) |
 | `language` | string | service default language (`AUDITOR_STT_DEFAULT_LANGUAGE`, `fi`) | Passed to faster-whisper as given; the value is not validated at submission |
 | `chunk_seconds` | float | `60.0` | Chunk size in seconds; allowed range `[5.0, 300.0]`, otherwise 422 |
 | `word_timestamps` | bool | `true` | Include word-level timing. With `false`, segments have an empty `words` list and captions use one cue per segment |
@@ -313,7 +325,7 @@ The TTL counts from `finished_at`. A sweep runs at startup and then once an hour
 - **404**: unknown job id (also for a malformed id, and for `DELETE` of an unknown job).
 - **409**: `GET .../result` on a job that is not `completed` without `partial=1` (body `{"detail": "Job is not finished", "status": ...}`); `DELETE` when the files are busy ("Job is busy; try again").
 - **413**: upload larger than `AUDITOR_STT_MAX_UPLOAD_MB`.
-- **422**: invalid input: neither or both of `file` / `source_path`; empty upload; `chunk_seconds` outside 5-300; `client_ref` longer than 200 characters; `source_path` not an existing file inside the media root, or no media root configured; unknown `format` or `status`; `format=youtube` without a valid `start_time`, or whitespace in `region` / `cue`; `max_cue_duration` not above 0 or `max_line_chars` below 1.
+- **422**: invalid input: not exactly one of `file` / `source_path` / `source_url`; a `source_url` that is not enabled, not allowed, unusable or failed to download; empty upload; `chunk_seconds` outside 5-300; `client_ref` longer than 200 characters; `source_path` not an existing file inside the media root, or no media root configured; unknown `format` or `status`; `format=youtube` without a valid `start_time`, or whitespace in `region` / `cue`; `max_cue_duration` not above 0 or `max_line_chars` below 1.
 - **500**: a complete result was requested but chunk result files of the job are missing or unreadable ("Result files of this job are missing").
 - **503**: jobs are not configured (no `AUDITOR_STT_DATA_DIR`). A model that is still loading does not cause 503 on the jobs routes.
 
