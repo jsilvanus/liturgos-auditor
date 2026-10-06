@@ -33,7 +33,10 @@ RUN set -eux \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY auditor_stt ./auditor_stt
-RUN pip3 install --no-cache-dir . \
+# Ubuntu 22.04's pip 22.0 crashes in its resolver ("assert len(weights) == expected_node_count") on this
+# dependency set, so upgrade pip before installing.
+RUN pip3 install --no-cache-dir --upgrade pip \
+  && pip3 install --no-cache-dir . \
   && chmod -R a+rX,go-w /app
 
 # Everything below needs root, so it comes after apt/pip and before USER. The uid/gid are fixed
