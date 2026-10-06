@@ -16,3 +16,11 @@ python-packages/*/models/
 *.ogg
 *.webm
 *.m4a
+# Model weights and exports never belong in this repo (see CLAUDE.md)
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
