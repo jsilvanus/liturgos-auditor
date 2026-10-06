@@ -1,0 +1,18 @@
+liturgos-auditor
+Copyright (c) 2026 Juha Itäleino. The source code of this repository is licensed under the MIT License (see LICENSE).
+
+Models are NOT covered by that license. This repository contains no model weights.
+
+Models fetched or used at run time (licenses as published by their authors; verify the model card of the exact model you deploy):
+
+  openai/whisper-large-v3-turbo, openai/whisper-small   OpenAI Whisper             MIT
+  mobiuslabsgmbh/faster-whisper-large-v3-turbo          CTranslate2 conversion      MIT
+  Systran/faster-whisper-*                              CTranslate2 conversions     MIT
+
+Models produced with the training pipeline (auditor-stt train / export):
+  They are derivative works of the base model and of the training data. The base model's license
+  applies, and the terms under which the recordings were collected may restrict use, sharing or
+  publication of the resulting model. The MIT license of this repository grants no rights to such
+  models or to the recordings.
+
+Third-party software (faster-whisper, CTranslate2, Transformers, PEFT, PyTorch, ...) keeps its own license.

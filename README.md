@@ -212,4 +212,13 @@ AUDITOR_STT_RUN_SLOW=1 pytest -v tests/test_training_smoke.py
 
 ## License
 
-MIT (as declared in `python-packages/liturgos-auditor-stt/pyproject.toml`).
+The code in this repository is MIT (see [LICENSE](LICENSE) and `python-packages/liturgos-auditor-stt/pyproject.toml`).
+
+**The MIT license of the code does not extend to the models.** The repository contains no model weights; they are downloaded from Hugging Face at run time or produced by the training pipeline, and each carries its own license:
+
+- **Default model** (`large-v3-turbo`): faster-whisper resolves the alias to the CTranslate2 conversion `mobiuslabsgmbh/faster-whisper-large-v3-turbo` of OpenAI's `openai/whisper-large-v3-turbo`. OpenAI publishes Whisper code and weights under MIT, and the conversions of the models named in this repository (`Systran/faster-whisper-*`, `mobiuslabsgmbh/faster-whisper-large-v3-turbo`) are published under MIT as well. The license of a downloaded model is whatever its Hugging Face model card says, so check the card of the exact model you deploy.
+- **Training base models** (`--preset`, `auditor-stt train`): `openai/whisper-large-v3-turbo` and `openai/whisper-small` (MIT). You can pass any other `--model`; its license then applies.
+- **Fine-tuned models** (`train`, `export`, `models register`) are derived from a base model and from your training data. They inherit the base model's license terms, and in addition **the terms under which the recordings were collected may restrict how the resulting model can be used, shared or published**. Nothing in this repository grants those rights. For models trained on crowd-source-voice recordings, the consent text, privacy policy and data license of that corpus decide (see [LEGAL-TODO.md](LEGAL-TODO.md)); do not publish or redistribute such a model before they are settled. A fine-tune of a model from another source (for example a community fine-tune with a non-commercial license) can be more restrictive than MIT.
+- **Dependencies** (faster-whisper, CTranslate2, Transformers, PEFT, PyTorch and others) are separate packages under their own licenses; see each project.
+
+See [NOTICE](NOTICE) for the list. This is a maintainer's summary, not legal advice.
