@@ -1,7 +1,8 @@
 liturgos-auditor
 Copyright (c) 2026 Juha Itäleino. The source code of this repository is licensed under the MIT License (see LICENSE).
 
-Models are NOT covered by that license. This repository contains no model weights.
+Models are NOT covered by that license. This repository is public and contains no model weights, including no fine-tuned models.
+Privately trained models are expected to live in a separate repository and are not covered by this license.
 
 Models fetched or used at run time (licenses as published by their authors; verify the model card of the exact model you deploy):
 

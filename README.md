@@ -214,7 +214,7 @@ AUDITOR_STT_RUN_SLOW=1 pytest -v tests/test_training_smoke.py
 
 The code in this repository is MIT (see [LICENSE](LICENSE) and `python-packages/liturgos-auditor-stt/pyproject.toml`).
 
-**The MIT license of the code does not extend to the models.** The repository contains no model weights; they are downloaded from Hugging Face at run time or produced by the training pipeline, and each carries its own license:
+**The MIT license of the code does not extend to the models.** This repository is public and ships no model weights, and in particular no fine-tuned models: privately trained models are expected to live in a separate repository later and are not covered by this license. Weights are downloaded from Hugging Face at run time or produced by the training pipeline, and each carries its own license:
 
 - **Default model** (`large-v3-turbo`): faster-whisper resolves the alias to the CTranslate2 conversion `mobiuslabsgmbh/faster-whisper-large-v3-turbo` of OpenAI's `openai/whisper-large-v3-turbo`. OpenAI publishes Whisper code and weights under MIT, and the conversions of the models named in this repository (`Systran/faster-whisper-*`, `mobiuslabsgmbh/faster-whisper-large-v3-turbo`) are published under MIT as well. The license of a downloaded model is whatever its Hugging Face model card says, so check the card of the exact model you deploy.
 - **Training base models** (`--preset`, `auditor-stt train`): `openai/whisper-large-v3-turbo` and `openai/whisper-small` (MIT). You can pass any other `--model`; its license then applies.
