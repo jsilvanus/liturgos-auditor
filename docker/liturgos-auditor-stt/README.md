@@ -123,7 +123,7 @@ curl -H "Authorization: Bearer your_secret" http://localhost:8090/v1/jobs
 
 The GPU image (`Dockerfile.cuda`) requires the **NVIDIA Container Toolkit** on the host.
 
-Build:
+Published image: `ghcr.io/jsilvanus/liturgos-auditor-stt:latest-cuda` (also `<version>-cuda` and `sha-<sha>-cuda`), built by CI beside the CPU tags. To build it yourself:
 
 ```bash
 docker build -t auditor-stt:gpu -f docker/liturgos-auditor-stt/Dockerfile.cuda \
@@ -140,7 +140,7 @@ docker run --rm \
   -e AUDITOR_STT_MODEL_DIR=/models \
   -v auditor-stt-data:/data \
   -e AUDITOR_STT_DATA_DIR=/data \
-  auditor-stt:gpu
+  ghcr.io/jsilvanus/liturgos-auditor-stt:latest-cuda   # or your own auditor-stt:gpu build
 ```
 
 The GPU image sets `AUDITOR_STT_DEVICE=auto`: it tries CUDA (float16) first and falls back to CPU (int8) if that fails, so it also starts on a host without a GPU. `AUDITOR_STT_DEVICE=cuda` (or `cpu`) does not fall back: if the model cannot be loaded, `/health` stays at 503. `GET /health` reports the `device` in use.

@@ -1,4 +1,4 @@
-name: Publish STT image
+name: Publish STT images
 
 on:
   push:
@@ -10,7 +10,19 @@ env:
 
 jobs:
   build-and-push:
+    name: Publish ${{ matrix.variant }} image
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # CPU: tags `latest`, `<version>`, `sha-<sha>`. CUDA: the same tags with a `-cuda` suffix.
+          - variant: cpu
+            dockerfile: Dockerfile
+            suffix: ""
+          - variant: cuda
+            dockerfile: Dockerfile.cuda
+            suffix: "-cuda"
     permissions:
       contents: read
       packages: write
@@ -29,20 +41,22 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
+          flavor: |
+            suffix=${{ matrix.suffix }},onlatest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      # CPU image only. No model is baked in: it downloads into AUDITOR_STT_MODEL_DIR on first start.
-      # The build context is the package source, as documented in the Dockerfile.
+      # No model is baked in: it downloads into AUDITOR_STT_MODEL_DIR on first start.
+      # The build context is the package source, as documented in the Dockerfiles.
       - uses: docker/build-push-action@v6
         with:
           context: python-packages/liturgos-auditor-stt
-          file: docker/liturgos-auditor-stt/Dockerfile
+          file: docker/liturgos-auditor-stt/${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
