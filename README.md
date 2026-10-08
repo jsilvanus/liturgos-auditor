@@ -9,6 +9,16 @@ Self-hosted speech-to-text service (default language Finnish) for transcribing l
 
 Both share one loaded model. Live requests are served before the next batch chunk starts; a chunk that is already running is never interrupted.
 
+## Transcription modes
+
+The service supports three operating modes:
+
+- **Push transcription**: the client uploads an audio file or short segment to `/inference` (whisper.cpp-compatible) or `/v1/audio/transcriptions` (OpenAI-compatible). This is the simplest "send audio and get text back" mode for short recordings or live chunked uploads.
+- **Pull transcription**: the service opens a live stream itself from an `rtsp://` or `srt://` source and publishes transcript events via `/v1/live` as Server-Sent Events. The client does not upload audio; it starts a session, listens for transcript/status events, and stops it when done.
+- **Batch transcription**: the service processes a full audio/video file asynchronously via `/v1/jobs`. Upload a file, point to a path under the media root, or provide a URL the service fetches itself; then poll for status and fetch VTT/SRT/text/JSON results when the job is finished.
+
+These modes all use the same underlying model, but they differ in who sends the payload and whether the work is synchronous or asynchronous.
+
 ## Components
 
 - **Service** (`auditor_stt/serve/`): FastAPI + faster-whisper inference, two-priority queue, batch jobs (enabled by a data directory), model registry lookup and hot model switching.
