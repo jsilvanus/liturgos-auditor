@@ -7,13 +7,17 @@ blocking the reader, so a slow model never stalls the stream; a segment that has
 waited longer than `max_lag_seconds` is dropped with a status event instead.
 
 Events (all JSON, `id` = the session's event counter):
-  transcript  {sequence, text, language, start, end, wall_start, wall_end}
+  transcript  {sequence, text, language, start, end, wall_start, wall_end, delay_seconds}
   status      {state, ...}   starting, running, reconnecting, clock_reset, dropped, ended
   error       {message}
 
 `start`/`end` are seconds since the session began; `wall_start`/`wall_end` are
 absolute UTC (ISO 8601) taken from the clock anchor, so a consumer never needs to
 know when the session started. Sessions are not durable.
+
+`delay_seconds` holds each transcript back until `wall_end + delay_seconds`, so
+text can line up with a stream that is itself delayed (a broadcast delay). The
+times in the event stay those of the source; only the moment of publishing moves.
 """
 
 import asyncio
@@ -62,6 +66,8 @@ class LiveConfig:
     carry_chars: int = 200
     read_timeout: float = 120.0
     clock_drift_seconds: float = 1.0
+    default_delay_seconds: float = 0.0
+    max_delay_seconds: float = 120.0
 
     @classmethod
     def from_env(cls, env=None):
@@ -82,6 +88,8 @@ class LiveConfig:
             ("AUDITOR_STT_LIVE_PAUSE_SECONDS", "pause_seconds", float),
             ("AUDITOR_STT_LIVE_READ_TIMEOUT", "read_timeout", float),
             ("AUDITOR_STT_LIVE_CLOCK_DRIFT_SECONDS", "clock_drift_seconds", float),
+            ("AUDITOR_STT_LIVE_DELAY_SECONDS", "default_delay_seconds", float),
+            ("AUDITOR_STT_LIVE_MAX_DELAY_SECONDS", "max_delay_seconds", float),
         ):
             if env.get(name):
                 setattr(config, attr, cast(env[name]))
@@ -101,13 +109,14 @@ def check_source(url, hosts):
 
 
 class LiveSession:
-    def __init__(self, manager, session_id, source, language, prompt, client_ref):
+    def __init__(self, manager, session_id, source, language, prompt, client_ref, delay_seconds=0.0):
         self.manager = manager
         self.id = session_id
         self.source = source
         self.language = language
         self.prompt = prompt
         self.client_ref = client_ref
+        self.delay_seconds = delay_seconds
         self.state = "starting"
         self.reason = None
         self.created = manager.now()
@@ -120,6 +129,7 @@ class LiveSession:
         self._stop = threading.Event()
         self._stream = None
         self._queue = None
+        self._out = None
         self._loop = None
         self._tasks = []
         self._scrub = _scrubber(source)
@@ -134,6 +144,7 @@ class LiveSession:
             "reason": self.reason,
             "client_ref": self.client_ref,
             "language": self.language,
+            "delay_seconds": self.delay_seconds,
             "transcripts": self.transcripts,
             "attempts": self.attempt,
             "created": iso(self.created),
@@ -163,7 +174,12 @@ class LiveSession:
     def start(self):
         self._loop = asyncio.get_running_loop()
         self._queue = asyncio.Queue()
-        self._tasks = [asyncio.create_task(self._run()), asyncio.create_task(self._transcribe())]
+        self._out = asyncio.Queue()
+        self._tasks = [
+            asyncio.create_task(self._run()),
+            asyncio.create_task(self._transcribe()),
+            asyncio.create_task(self._deliver()),
+        ]
         self._publish("status", {"state": "starting"})
 
     async def stop(self, reason="stopped"):
@@ -247,8 +263,9 @@ class LiveSession:
             self._publish("error", {"message": self._scrub(f"{type(exc).__name__}")})
         finally:
             await self._queue.put(None)
-        # Let the transcriber finish what it has, then close the session.
+        # Let the transcriber finish what it has and the delay run out, then close the session.
         await asyncio.shield(self._tasks[1])
+        await asyncio.shield(self._tasks[2])
         self._end()
 
     def _read_attempt(self):
@@ -310,6 +327,7 @@ class LiveSession:
         while True:
             item = await self._queue.get()
             if item is None:
+                await self._out.put(None)
                 return
             queued, samples, wall_start, wall_end = item
             if manager.now() - queued > manager.config.max_lag_seconds:
@@ -340,18 +358,35 @@ class LiveSession:
                 continue
             previous = f"{previous} {text}"[-1000:]
             self.transcripts += 1
-            self._publish(
-                "transcript",
-                {
-                    "sequence": self.transcripts,
-                    "text": text,
-                    "language": result.get("language") or self.language,
-                    "start": round(wall_start - self.created, 3),
-                    "end": round(wall_end - self.created, 3),
-                    "wall_start": iso(wall_start),
-                    "wall_end": iso(wall_end),
-                },
+            await self._out.put(
+                (
+                    wall_end + self.delay_seconds,
+                    {
+                        "sequence": self.transcripts,
+                        "text": text,
+                        "language": result.get("language") or self.language,
+                        "start": round(wall_start - self.created, 3),
+                        "end": round(wall_end - self.created, 3),
+                        "wall_start": iso(wall_start),
+                        "wall_end": iso(wall_end),
+                        "delay_seconds": self.delay_seconds,
+                    },
+                )
             )
+
+    async def _deliver(self):
+        """Publish transcripts in order, each no earlier than its release time (wall_end + delay)."""
+        while True:
+            item = await self._out.get()
+            if item is None:
+                return
+            release, data = item
+            while self.delay_seconds > 0:
+                remaining = release - self.manager.now()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(remaining, 0.25))
+            self._publish("transcript", data)
 
 
 class LiveManager:
@@ -379,13 +414,17 @@ class LiveManager:
 
     # --- sessions --------------------------------------------------------
 
-    def create(self, source, language, prompt=None, client_ref=None):
+    def create(self, source, language, prompt=None, client_ref=None, delay_seconds=None):
         check_source(source, self.config.source_hosts)
+        if delay_seconds is None:
+            delay_seconds = self.config.default_delay_seconds
+        if not 0 <= delay_seconds <= self.config.max_delay_seconds:
+            raise LiveError(422, f"delay_seconds must be between 0 and {self.config.max_delay_seconds:g}")
         self._purge()
         active = [s for s in self.sessions.values() if not s.finished]
         if len(active) >= self.config.max_sessions:
             raise LiveError(429, f"At most {self.config.max_sessions} live sessions at a time")
-        session = LiveSession(self, uuid.uuid4().hex[:16], source, language, prompt, client_ref)
+        session = LiveSession(self, uuid.uuid4().hex[:16], source, language, prompt, client_ref, delay_seconds)
         self.sessions[session.id] = session
         session.start()
         return session

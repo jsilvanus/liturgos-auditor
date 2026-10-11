@@ -528,3 +528,58 @@ def test_local_stream_decodes_to_pcm16_mono_16k(tmp_path):
     stream.close()
     assert len(data) == pytest.approx(1.5 * RATE * 2, abs=RATE * 0.1)
     assert np.abs(np.frombuffer(data, dtype="<i2")).max() > 1000
+
+
+# --- delay ---------------------------------------------------------------------------
+
+
+def test_delay_holds_transcripts_until_wall_end_plus_delay():
+    host = Host()
+    clock = [1759656000.0]
+    config = LiveConfig(source_hosts=["mediamtx.test"], reconnect_seconds=0.2, clock_drift_seconds=1e9)
+    client, manager, _ = make_client(host, [ListStream(pcm(speech_audio()))], config, now=lambda: clock[0])
+    with client:
+        body = client.post("/v1/live", json={"source": SOURCE, "delay_seconds": 20}).json()
+        assert body["delay_seconds"] == 20
+        session = manager.get(body["id"])
+        deadline = time.monotonic() + 5
+        while len(host.calls) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.4)  # the transcribed text is waiting, not published
+        assert len(host.calls) == 2
+        assert not [e for e in session.events if e[1] == "transcript"]
+        assert client.get(f"/v1/live/{body['id']}").json()["status"] != "ended"
+        clock[0] += 10  # first segment ends ~3 s in: released at ~23 s; second ~6.5 s: ~26.5 s
+        time.sleep(0.5)
+        assert not [e for e in session.events if e[1] == "transcript"]
+        clock[0] += 30
+        info = wait_ended(client, body["id"])
+    sent = [e[2] for e in session.events if e[1] == "transcript"]
+    assert [t["sequence"] for t in sent] == [1, 2]
+    assert all(t["delay_seconds"] == 20 for t in sent)
+    # Times stay those of the source, not of the delayed publish.
+    assert sent[0]["wall_start"] >= iso(1759656000.0 + 0.5)
+    assert info["transcripts"] == 2
+
+
+def test_delay_defaults_and_limits():
+    host = Host()
+    config = LiveConfig(
+        source_hosts=["mediamtx.test"], reconnect_seconds=0.2, default_delay_seconds=2.0, max_delay_seconds=30.0
+    )
+    client, manager, _ = make_client(host, [ListStream(b"")], config)
+    with client:
+        assert client.post("/v1/live", json={"source": SOURCE, "delay_seconds": 31}).status_code == 422
+        assert client.post("/v1/live", json={"source": SOURCE, "delay_seconds": -1}).status_code == 422
+        created = client.post("/v1/live", json={"source": SOURCE})
+        assert created.status_code == 202
+        assert created.json()["delay_seconds"] == 2.0
+        client.delete(f"/v1/live/{created.json()['id']}")
+
+
+def test_delay_config_from_env():
+    config = LiveConfig.from_env(
+        {"AUDITOR_STT_LIVE_DELAY_SECONDS": "5", "AUDITOR_STT_LIVE_MAX_DELAY_SECONDS": "60"}
+    )
+    assert config.default_delay_seconds == 5.0 and config.max_delay_seconds == 60.0
+    assert LiveConfig.from_env({}).default_delay_seconds == 0.0

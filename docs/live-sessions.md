@@ -3,7 +3,7 @@
 The service pulls a live stream itself and publishes the text as Server-Sent Events. The client does not decode or chunk audio; it starts a session, listens, and stops it.
 
 ```
-POST   /v1/live               {"source": "rtsp://mediamtx:8554/live/main", "language": "fi", "prompt": "...", "client_ref": "..."}  -> 202
+POST   /v1/live               {"source": "rtsp://mediamtx:8554/live/main", "language": "fi", "prompt": "...", "client_ref": "...", "delay_seconds": 0}  -> 202
 GET    /v1/live               sessions
 GET    /v1/live/{id}          status
 GET    /v1/live/{id}/events   text/event-stream; Last-Event-ID resumes within the last 500 events
@@ -16,11 +16,15 @@ All routes need the API key (when one is set). `source` must be `rtsp://`, `rtsp
 
 | event | data |
 |---|---|
-| `transcript` | `sequence`, `text`, `language`, `start`, `end` (seconds since the session began), `wall_start`, `wall_end` (UTC, ISO 8601 with milliseconds) |
+| `transcript` | `sequence`, `text`, `language`, `start`, `end` (seconds since the session began), `wall_start`, `wall_end` (UTC, ISO 8601 with milliseconds), `delay_seconds` |
 | `status` | `state`: `starting`, `running`, `reconnecting`, `clock_reset` (`drift_seconds`), `dropped` (a segment skipped because the model was busy or behind), `ended` (`reason`: `stopped`, `source_lost`, `error`, `shutdown`) |
 | `error` | `message`, with URLs and credentials removed |
 
 Only final transcripts are sent, one per speech segment (cut at pauses of 0.6 s, or in the longest gap once a segment reaches 10 s). Each carries its own absolute time, so a consumer never needs to know when the session started. The `sequence` keeps counting across reconnects.
+
+## Delay
+
+`delay_seconds` (request field; default `AUDITOR_STT_LIVE_DELAY_SECONDS`, `0`; at most `AUDITOR_STT_LIVE_MAX_DELAY_SECONDS`, `120`, else 422) holds each transcript back until `wall_end + delay_seconds`, so the text lines up with a stream that is itself delayed, for example a broadcast delay on the way to viewers. Only the moment of publishing moves: `start`, `end`, `wall_start` and `wall_end` stay the times of the source, and the event carries `delay_seconds` so a consumer can tell. Order and `sequence` are kept, and held text does not slow transcription of the next segments. A transcript already older than its release time is published at once. When the stream ends, the session stays open until the held text has been published; `DELETE` ends it immediately and drops what is still held. `status` events (`dropped`, `clock_reset`) are not delayed. The delay is measured against this host's clock, like the wall times.
 
 ## How it runs
 
