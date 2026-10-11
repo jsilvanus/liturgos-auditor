@@ -163,6 +163,7 @@ Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` a
 | `AUDITOR_STT_LIVE_MAX_SEGMENT_SECONDS` / `_PAUSE_SECONDS` | `10` / `0.6` | Longest segment, and the pause that ends one |
 | `AUDITOR_STT_LIVE_MAX_LAG_SECONDS` | `30` | A segment still waiting for the model after this long is dropped (status event) |
 | `AUDITOR_STT_LIVE_CLOCK_DRIFT_SECONDS` | `1` | Drift between stream position and wall time that moves the clock anchor |
+| `AUDITOR_STT_LIVE_DELAY_SECONDS` / `_MAX_DELAY_SECONDS` | `0` / `120` | Default publish delay of a live session's transcripts (a request may set `delay_seconds`), and the largest delay a request may ask for |
 | `AUDITOR_STT_LIVE_READ_TIMEOUT` | `120` | Seconds without PCM from the fleet before the stream counts as lost |
 | `AUDITOR_STT_MAX_INGEST_MB` | `4096` | Size cap for the WAV a fleet worker sends back |
 | `AUDITOR_STT_MAX_UPLOAD_MB` | `2048` | Size cap (1 MB = 1024 x 1024 bytes) for uploads to `POST /v1/jobs` |

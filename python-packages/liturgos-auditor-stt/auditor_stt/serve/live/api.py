@@ -20,6 +20,7 @@ class StartRequest(BaseModel):
     language: Optional[str] = None
     prompt: Optional[str] = None
     client_ref: Optional[str] = None
+    delay_seconds: Optional[float] = None
 
 
 def _manager(request: Request):
@@ -41,7 +42,8 @@ async def start(body: StartRequest, request: Request):
     manager = _manager(request)
     try:
         session = manager.create(
-            body.source, body.language or request.app.state.default_language, body.prompt, body.client_ref
+            body.source, body.language or request.app.state.default_language, body.prompt, body.client_ref,
+            body.delay_seconds,
         )
     except LiveError as exc:
         raise HTTPException(exc.status, exc.message) from None
