@@ -26,6 +26,8 @@ Manifest (times are ISO-8601 UTC strings, null until known):
     params            {language, chunk_seconds, word_timestamps, prompt, client_ref}
     source            {kind: "upload" | "path" | "url", path, url?, ingest_token?}
     audio             {wav_path, duration_seconds, sample_rate} | null
+    duration_seconds  audio length known before normalising (client or probe), then the measured one
+    duration_source   client | probe | normalised | null
     chunks            [{index, start_sample, end_sample, start, end, snapped}] | null
                       the persisted plan; never recomputed on resume
     current_seconds   audio seconds transcribed so far
@@ -61,7 +63,10 @@ DEFAULT_PARAMS = {
 
 # Fields update() may change. Status and its timestamps go through set_status().
 _UPDATABLE = frozenset(
-    {"params", "source", "audio", "chunks", "current_seconds", "phase", "error", "cancel_requested"}
+    {
+        "params", "source", "audio", "chunks", "current_seconds", "phase", "error", "cancel_requested",
+        "duration_seconds", "duration_source",
+    }
 )
 
 _ID_RE = re.compile(r"[0-9a-f]{32}")
@@ -199,6 +204,8 @@ class JobStore:
             },
             "audio": None,
             "chunks": None,
+            "duration_seconds": None,
+            "duration_source": None,
             "current_seconds": 0.0,
             "phase": "queued",
             "error": None,

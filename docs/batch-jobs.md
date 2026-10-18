@@ -60,6 +60,7 @@ The service downloads the file into the job's directory before it answers, so th
 | `word_timestamps` | bool | `true` | Include word-level timing. With `false`, segments have an empty `words` list and captions use one cue per segment |
 | `prompt` | string | none | Initial prompt (for example liturgical vocabulary). The tail of the previous chunk's text is appended to it for each chunk (see [Chunking](#chunking)) |
 | `client_ref` | string | none | Opaque identifier, at most 200 characters (422 if longer), for filtering in list requests, e.g. a project id |
+| `duration_seconds` | float | none | Length of the audio, if the caller knows it (greater than 0, otherwise 422). Used to estimate queue times before the file has been decoded. Without it the service probes the source with ffprobe at submit (see [Queue position and estimate](#queue-position-and-estimate)) |
 
 ## Submission response
 
@@ -111,7 +112,9 @@ Poll with `GET /v1/jobs/{id}`:
     "chunk_seconds": 60.0,
     "word_timestamps": true
   },
-  "cancel_requested": false
+  "cancel_requested": false,
+  "duration_seconds": 4020.0,
+  "queue": null
 }
 ```
 
@@ -128,6 +131,35 @@ Poll with `GET /v1/jobs/{id}`:
 | `chunks_done`, `chunks_total` | Chunk-level progress. `chunks_total` is `0` until the chunk plan exists |
 | `params` | The `language`, `chunk_seconds` and `word_timestamps` the job runs with (`prompt` is not echoed) |
 | `cancel_requested` | `true` once a `DELETE` has asked a running job to stop and it has not stopped yet |
+| `duration_seconds` | Audio length when known: the caller's value, the probe's, or (once decoded) the measured one. `null` while unknown |
+| `queue` | While the job is `queued`: where it stands (below). `null` once it runs |
+
+### Queue position and estimate
+
+Jobs run one at a time, oldest first. A queued job carries a `queue` block:
+
+```json
+{
+  "position": 2,
+  "seconds_ahead": 1800.0,
+  "unknown_ahead": 0,
+  "estimated_start_seconds": 600.0,
+  "estimated_finish_seconds": 1000.0,
+  "estimate_is_minimum": false
+}
+```
+
+| Field | Notes |
+|-------|-------|
+| `position` | 1 is the next job to start |
+| `seconds_ahead` | Audio left in the running job plus the audio of every older queued job whose length is known |
+| `unknown_ahead` | Jobs ahead whose length is not known. When above 0 the two estimates are `null` |
+| `estimated_start_seconds`, `estimated_finish_seconds` | `seconds_ahead` (plus the job's own length for the finish) divided by the recent rate. `null` when a job ahead has no known length, the job's own length is unknown (finish only) or no job has finished yet |
+| `estimate_is_minimum` | `true` while a live session runs: live captions take the model first, so the real wait is longer by an amount that cannot be predicted |
+
+The rate is audio seconds per wall-clock second, the median of the last five completed jobs, kept in `rate.json` in the jobs directory. It is measured end to end (decoding included); nothing is benchmarked at startup. The same numbers for the whole queue are in `GET /status`.
+
+**Probe at submit.** When `duration_seconds` is not sent, the service reads the length with ffprobe: a `source_url` job on a fleet (`AUDITOR_STT_STRIP=fleet`) is probed by an fffleet `ffprobe` job, everything else with a local ffprobe on the saved file or the media-root path. The probe waits at most `AUDITOR_STT_PROBE_TIMEOUT` seconds (10). A failed or slow probe never fails the submit; the length stays unknown until the job is decoded.
 
 ## Results
 

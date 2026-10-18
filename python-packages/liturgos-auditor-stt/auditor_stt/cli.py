@@ -13,10 +13,11 @@ def _serve(args):
     # Batch jobs need a data dir; a local `serve` gets ./data unless one is configured.
     os.environ.setdefault("AUDITOR_STT_DATA_DIR", "./data")
     
-    # Custom access log config that filters out /health requests
+    # Custom access log config that filters out the /health, /livez and /readyz probes
     class HealthCheckFilter(logging.Filter):
         def filter(self, record):
-            return "/health" not in record.getMessage()
+            message = record.getMessage()
+            return not any(path in message for path in ("/health", "/livez", "/readyz"))
     
     # Get the uvicorn access logger and add the filter
     access_logger = logging.getLogger("uvicorn.access")

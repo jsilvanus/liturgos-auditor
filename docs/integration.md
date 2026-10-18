@@ -2,7 +2,7 @@
 
 This document describes how each consumer talks to the `liturgos-auditor-stt` service. The consumer-side facts come from the adapters in `live-captions-yt` (`packages/plugins/lcyt-rtmp/src/stt-adapters/whisper-http.js` and `openai.js`) and from the `saarnavideo` repository.
 
-Authentication in one sentence: when the service has `AUDITOR_STT_API_KEY` set, every endpoint except `/health` requires `Authorization: Bearer <key>` (401 otherwise); when it has none, every endpoint is open. See the [README](../README.md#all-endpoints).
+Authentication in one sentence: when the service has `AUDITOR_STT_API_KEY` set, every endpoint except `/health`, `/livez` and `/readyz` requires `Authorization: Bearer <key>` (401 otherwise); when it has none, every endpoint is open. See the [README](../README.md#all-endpoints).
 
 ## lcyt (live-captions-yt)
 
@@ -161,6 +161,8 @@ saarnavideo's `MediaJob` (`prisma/schema.prisma`) has these progress fields:
 | `error` | `error` (`String?`) |
 
 `chunks_done` / `chunks_total` and `cancel_requested` have no counterpart in `MediaJob`. Field meanings: [Job status](batch-jobs.md#job-status).
+
+To show how long a queued job waits, send `duration_seconds` (the length of the extracted audio) with the submit and read the `queue` block of the job status (`position`, `seconds_ahead`, `estimated_start_seconds`, `estimate_is_minimum`); the whole queue (`jobs`, `rate`, `live`) is in `GET /status`. See [Queue position and estimate](batch-jobs.md#queue-position-and-estimate).
 
 ### Fetch the result
 

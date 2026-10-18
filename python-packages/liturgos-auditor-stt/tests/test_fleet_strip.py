@@ -39,6 +39,7 @@ class FakeFleet:
         self.requests = []
         self.svc = None
         self.delivered = threading.Event()
+        self.probe_seconds = 30.0
 
     def handler(self, request: httpx.Request):
         path = request.url.path
@@ -49,6 +50,10 @@ class FakeFleet:
             return httpx.Response(503, json={"error": {"code": "UNAVAILABLE", "message": "no"}})
         if path == "/v1/jobs" and request.method == "POST":
             spec = json.loads(request.content)
+            if spec.get("type") == "ffprobe" and self.behaviour != "reject":
+                outputs = [{"name": "probe", "uri": "inline:", "bytes": 1, "data": {"format": {"duration": str(self.probe_seconds)}}}]
+                self.jobs[spec["id"]] = {"spec": spec, "state": "succeeded", "error": None, "outputs": outputs}
+                return httpx.Response(201, json={"id": spec["id"], "state": "succeeded"})
             if self.behaviour == "reject":
                 return httpx.Response(422, json={"error": {"message": f"bad input {spec['inputs'][0]['uri']}"}})
             self.jobs[spec["id"]] = {"spec": spec, "state": "running", "error": None}
@@ -61,7 +66,9 @@ class FakeFleet:
         if request.method == "DELETE":
             job["state"] = "cancelled"
             return httpx.Response(202, json={"id": fleet_id, "state": "cancelled"})
-        return httpx.Response(200, json={"id": fleet_id, "state": job["state"], "error": job["error"]})
+        return httpx.Response(
+            200, json={"id": fleet_id, "state": job["state"], "error": job["error"], "outputs": job.get("outputs", [])}
+        )
 
     def _work(self, fleet_id):
         job = self.jobs[fleet_id]

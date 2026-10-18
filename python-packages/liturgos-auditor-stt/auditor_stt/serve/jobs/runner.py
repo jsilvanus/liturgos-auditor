@@ -33,6 +33,8 @@ from .pipeline import plan_job_chunks, transcribe_chunk
 from .store import TERMINAL_STATUSES, JobNotFoundError
 from .fetch import FetchError, UploadTooLargeError, fetch_url
 from .fleet import FleetJobError, FleetUnavailableError
+from .probe import ProbeError, probe_local
+from .rate import RateTracker
 from .wav import open_pcm16_mono
 
 logger = logging.getLogger(__name__)
@@ -82,6 +84,8 @@ class _Run:
         self.job_id = job_id
         self.wav = None
         self.end_seconds = 0.0
+        self.began = time.monotonic()
+        self.worked_seconds = 0.0  # audio seconds this run transcribed (a resumed job skips its finished chunks)
         # Set to interrupt a running ffmpeg (stop, or DELETE while normalising).
         self.cancel = threading.Event()
 
@@ -108,6 +112,7 @@ class JobRunner:
         fleet_fallback=True,
         fetch_limit=2048 * 1024 * 1024,
         fetch_timeout=300.0,
+        probe_timeout=10.0,
     ):
         self.store = store
         # `fleet` (a FleetStripper) strips the audio of kind-"url" sources on a fleet worker; without it,
@@ -117,6 +122,9 @@ class JobRunner:
         self._fleet_fallback = fleet_fallback
         self._fetch_limit = fetch_limit
         self._fetch_timeout = fetch_timeout
+        self._probe_timeout = probe_timeout
+        # Audio seconds per wall second of recent jobs; behind queue estimates (/status, job `queue` block).
+        self.rate = RateTracker(store.root / "rate.json")
         self.config = config or RunnerConfig.from_env()
         self._get_host = get_host
         self._queue = queue
@@ -152,6 +160,18 @@ class JobRunner:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._worker = self._purger = None
+
+    def probe_duration(self, manifest):
+        """Seconds of audio in the job's source before it is queued, or None. Blocking (call in a thread)."""
+        source = manifest.get("source") or {}
+        try:
+            if source.get("kind") == "url" and self._fleet is not None and source.get("url"):
+                return self._fleet.probe_duration(manifest["id"], source["url"], self._probe_timeout)
+            if source.get("path"):
+                return probe_local(source["path"], self._probe_timeout)
+        except (ProbeError, FleetJobError, FleetUnavailableError) as exc:
+            logger.info("Job %s: duration not probed: %s", manifest.get("id"), exc)
+        return None
 
     def submit(self, job_id):
         self._pending.put_nowait(job_id)
@@ -261,6 +281,7 @@ class JobRunner:
         fields = {"phase": status}
         if status == "completed":
             fields["current_seconds"] = run.end_seconds
+            self.rate.record(run.worked_seconds, time.monotonic() - run.began)
         self.store.set_status(run.job_id, status, error=error)
         self.store.update(run.job_id, **fields)
         self.store.remove_working_files(run.job_id)
@@ -296,6 +317,9 @@ class JobRunner:
                 "sample_rate": run.wav.sample_rate,
             }
             await asyncio.to_thread(store.update, job_id, audio=audio)
+        await asyncio.to_thread(
+            store.update, job_id, duration_seconds=run.wav.duration, duration_source="normalised"
+        )
         chunks = await self._plan(run, manifest, params)
         run.end_seconds = chunks[-1].end
 
@@ -304,6 +328,7 @@ class JobRunner:
         while prefix in done:
             prefix += 1
         self._baseline[job_id] = prefix
+        run.worked_seconds = run.end_seconds - (chunks[prefix - 1].end if prefix else 0.0)
         await asyncio.to_thread(
             store.update, job_id, phase="transcribing", current_seconds=chunks[prefix - 1].end if prefix else 0.0
         )

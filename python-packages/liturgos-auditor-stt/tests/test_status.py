@@ -34,6 +34,10 @@ def test_status_reports_queue_and_model():
             "compute_type": "int8",
             "loaded": True,
         },
+        "jobs": None,
+        "rate": None,
+        "rate_samples": 0,
+        "live": None,
     }
 
 
