@@ -2,7 +2,7 @@
 
 This document describes how each consumer talks to the `liturgos-auditor-stt` service. The consumer-side facts come from the adapters in `live-captions-yt` (`packages/plugins/lcyt-rtmp/src/stt-adapters/whisper-http.js` and `openai.js`) and from the `saarnavideo` repository.
 
-Authentication in one sentence: when the service has `AUDITOR_STT_API_KEY` set, every endpoint except `/health`, `/livez` and `/readyz` requires `Authorization: Bearer <key>` (401 otherwise); when it has none, every endpoint is open. See the [README](../README.md#all-endpoints).
+Authentication in one sentence: when the service has `AUDITOR_STT_API_KEY` set, every endpoint except `/health`, `/live` and `/ready` requires `Authorization: Bearer <key>` (401 otherwise); when it has none, every endpoint is open. See the [README](../README.md#all-endpoints).
 
 ## lcyt (live-captions-yt)
 

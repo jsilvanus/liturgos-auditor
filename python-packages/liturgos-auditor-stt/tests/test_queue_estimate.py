@@ -1,4 +1,4 @@
-"""Queue estimates, the duration probe, the job rate and the /livez and /readyz probes."""
+"""Queue estimates, the duration probe, the job rate and the /live and /ready probes."""
 
 import os
 import threading
@@ -229,7 +229,7 @@ def test_status_reports_live_sessions(tmp_path):
 def test_status_stays_behind_the_key_but_probes_are_open(tmp_path):
     with _service(tmp_path, api_key="k") as svc:
         assert svc.client.get("/status").status_code == 401
-        for path in ("/health", "/livez", "/readyz"):
+        for path in ("/health", "/live", "/ready"):
             assert svc.client.get(path).status_code == 200, path
 
 
@@ -293,28 +293,28 @@ class _Failing(_Unloaded):
         raise ModelLoadError("Could not load model '/secret/path/model' on any device")
 
 
-def test_livez_is_200_whatever_the_model_does():
+def test_live_is_200_whatever_the_model_does():
     for host in (_Unloaded(), _Loaded(), _Failing()):
         with TestClient(create_app(model_host=host, queue=InferenceQueue())) as client:
-            assert client.get("/livez").json() == {"status": "ok"}
+            assert client.get("/live").json() == {"status": "ok"}
 
 
-def test_readyz_follows_the_model():
+def test_ready_follows_the_model():
     with TestClient(create_app(model_host=_Loaded(), queue=InferenceQueue())) as client:
-        response = client.get("/readyz")
+        response = client.get("/ready")
         assert response.status_code == 200
         assert response.json()["state"] == "ready"
         assert response.json()["error"] is None
 
     with TestClient(create_app(model_host=_Unloaded(), queue=InferenceQueue())) as client:
-        response = client.get("/readyz")
+        response = client.get("/ready")
         assert response.status_code == 503
         assert response.json()["state"] == "loading"
 
 
-def test_readyz_tells_a_failed_load_from_a_slow_one_without_paths():
+def test_ready_tells_a_failed_load_from_a_slow_one_without_paths():
     with TestClient(create_app(model_host=_Failing(), queue=InferenceQueue())) as client:
-        response = client.get("/readyz")
+        response = client.get("/ready")
         assert response.status_code == 503
         body = response.json()
         assert body["state"] == "failed"
@@ -323,10 +323,10 @@ def test_readyz_tells_a_failed_load_from_a_slow_one_without_paths():
         assert client.get("/health").status_code == 503  # /health keeps its old meaning
 
 
-def test_readyz_needs_a_writable_job_store(tmp_path, monkeypatch):
+def test_ready_needs_a_writable_job_store(tmp_path, monkeypatch):
     with _service(tmp_path) as svc:
-        assert svc.client.get("/readyz").status_code == 200
+        assert svc.client.get("/ready").status_code == 200
         monkeypatch.setattr(os, "access", lambda *_args, **_kw: False)
-        response = svc.client.get("/readyz")
+        response = svc.client.get("/ready")
         assert response.status_code == 503
         assert response.json()["state"] == "storage_unwritable"

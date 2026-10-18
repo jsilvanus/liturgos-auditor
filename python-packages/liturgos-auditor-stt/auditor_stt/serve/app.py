@@ -263,13 +263,13 @@ def create_app(
             return JSONResponse(body, status_code=503)
         return body
 
-    @app.get("/livez")
-    async def livez():
+    @app.get("/live")
+    async def live_probe():
         # Liveness: the process answers. Never tied to the model, so a slow or failed load does not get it restarted.
         return {"status": "ok"}
 
-    @app.get("/readyz")
-    async def readyz():
+    @app.get("/ready")
+    async def ready_probe():
         body = model_status()
         store = app.state.job_store
         writable = store is None or os.access(store.root, os.W_OK)
