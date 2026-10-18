@@ -28,6 +28,7 @@ from starlette.convertors import Convertor, register_url_convertor
 from ...captions import make_cues, parse_start_time, to_srt, to_text, to_vtt, to_youtube
 from .assemble import IncompleteJobError, assemble, progress
 from .chunking import MAX_CHUNK_SECONDS, MIN_CHUNK_SECONDS
+from .estimate import job_duration, queue_overview
 from .fetch import FetchError as _FetchError
 from .fetch import UploadTooLargeError as _UploadTooLargeError
 from .fetch import fetch_url as _fetch_url
@@ -80,7 +81,7 @@ def _load(store, job_id):
         raise HTTPException(status_code=404, detail="No such job") from None
 
 
-def _job_view(manifest, runner):
+def _job_view(manifest, runner, queue=None):
     plan = manifest.get("chunks") or []
     current = manifest.get("current_seconds") or 0.0
     # The runner works in order, so the chunks done are those ending at or before the current position.
@@ -112,7 +113,27 @@ def _job_view(manifest, runner):
             "word_timestamps": params.get("word_timestamps"),
         },
         "cancel_requested": bool(manifest.get("cancel_requested")),
+        "duration_seconds": _duration(manifest),
+        # Position and start estimate while the job is queued (jobs/estimate.py); None otherwise.
+        "queue": queue,
     }
+
+
+def _duration(manifest):
+    value = job_duration(manifest)
+    return None if value is None else round(value, 1)
+
+
+def live_active(state):
+    live = getattr(state, "live", None)
+    return live is not None and bool(live.active_sessions())
+
+
+def queue_blocks(state):
+    """{job id: queue block} for every queued job, plus the summary, from the store as it is now."""
+    runner = state.job_runner
+    rate = runner.rate.rate() if runner is not None else None
+    return queue_overview(state.job_store.list(), rate, live_active(state))
 
 
 def _bad_source():
@@ -215,6 +236,7 @@ async def submit_job(
     source_url: Optional[str] = Form(None),
     language: Optional[str] = Form(None),
     chunk_seconds: float = Form(60.0, ge=MIN_CHUNK_SECONDS, le=MAX_CHUNK_SECONDS),
+    duration_seconds: Optional[float] = Form(None, gt=0, allow_inf_nan=False),
     word_timestamps: bool = Form(True),
     prompt: Optional[str] = Form(None),
     client_ref: Optional[str] = Form(None, max_length=200),
@@ -249,12 +271,24 @@ async def submit_job(
     else:
         manifest = await _create_from_upload(state, params, file)
 
+    await _record_duration(state, manifest, duration_seconds)
     runner.submit(manifest["id"])
     return JSONResponse(
         {"id": manifest["id"], "status": "queued"},
         status_code=202,
         headers={"Location": f"/v1/jobs/{manifest['id']}"},
     )
+
+
+async def _record_duration(state, manifest, claimed):
+    """Keep the audio length with the job so the queue can add it up: the client's value, else a probe (best effort)."""
+    store = state.job_store
+    if claimed is not None:
+        await asyncio.to_thread(store.update, manifest["id"], duration_seconds=claimed, duration_source="client")
+        return
+    seconds = await asyncio.to_thread(state.job_runner.probe_duration, manifest)
+    if seconds is not None:
+        await asyncio.to_thread(store.update, manifest["id"], duration_seconds=seconds, duration_source="probe")
 
 
 async def _create_from_upload(state, params, file):
@@ -306,8 +340,9 @@ def list_jobs(request: Request, client_ref: Optional[str] = None, status: Option
         raise HTTPException(status_code=422, detail=f"status must be one of: {', '.join(STATUSES)}")
     state = request.app.state
     manifests = state.job_store.list()  # oldest first
+    blocks = queue_blocks(state)["jobs"]
     jobs = [
-        _job_view(manifest, state.job_runner)
+        _job_view(manifest, state.job_runner, blocks.get(manifest["id"]))
         for manifest in reversed(manifests)
         if (client_ref is None or (manifest.get("params") or {}).get("client_ref") == client_ref)
         and (status is None or manifest.get("status") == status)
@@ -318,7 +353,9 @@ def list_jobs(request: Request, client_ref: Optional[str] = None, status: Option
 @router.get("/{job_id:jobid}")
 def get_job(job_id: str, request: Request):
     state = request.app.state
-    return _job_view(_load(state.job_store, job_id), state.job_runner)
+    manifest = _load(state.job_store, job_id)
+    queue = queue_blocks(state)["jobs"].get(job_id) if manifest["status"] == "queued" else None
+    return _job_view(manifest, state.job_runner, queue)
 
 
 @router.get("/{job_id:jobid}/result")

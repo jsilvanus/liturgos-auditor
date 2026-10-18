@@ -117,7 +117,9 @@ curl -X POST http://localhost:8090/v1/jobs \
 | Method | Path | Purpose | Auth |
 |--------|------|---------|------|
 | `GET` | `/health` | Model status; 200 once loaded, 503 while loading or after a failed load | none |
-| `GET` | `/status` | Live/batch queue depth and model info | if key set |
+| `GET` | `/live` | Liveness: 200 while the process answers, whatever the model does. Restart on this one | none |
+| `GET` | `/ready` | Readiness: 200 when the model is loaded and the job store is writable, else 503 with `state` (`loading`, `failed`, `storage_unwritable`) and a short `error`. Send traffic on this one | none |
+| `GET` | `/status` | Inference queue depth, model info, job counts (`jobs`), recent `rate` (audio seconds per second) and live sessions (`live`) | if key set |
 | `GET` | `/model` | Loaded model and the registry contents (models, current version, versions) | if key set |
 | `POST` | `/model` | Switch model (JSON body `{"model": "<spec>"}`) | key required |
 | `POST` | `/inference` | whisper.cpp-compatible: transcribe an uploaded audio segment | if key set |
@@ -128,7 +130,7 @@ curl -X POST http://localhost:8090/v1/jobs \
 | `GET` | `/v1/jobs/{id}/result` | Transcript as `json`, `vtt`, `srt`, `text` or `youtube` | if key set |
 | `DELETE` | `/v1/jobs/{id}` | Cancel a running job (202) or delete a job (204) | if key set |
 
-"If key set" means: when `AUDITOR_STT_API_KEY` is set the request needs `Authorization: Bearer <key>` (otherwise 401); when it is not set the endpoint is open, `/inference` and `/v1/audio/transcriptions` included. Only `/health` never needs a key. `POST /model` is different: it answers 403 when no key is configured, and it only accepts `registry:<name>[@<version>]` specs and aliases listed in `AUDITOR_STT_ALLOWED_MODELS`.
+"If key set" means: when `AUDITOR_STT_API_KEY` is set the request needs `Authorization: Bearer <key>` (otherwise 401); when it is not set the endpoint is open, `/inference` and `/v1/audio/transcriptions` included. `/health`, `/live` and `/ready` never need a key. `POST /model` is different: it answers 403 when no key is configured, and it only accepts `registry:<name>[@<version>]` specs and aliases listed in `AUDITOR_STT_ALLOWED_MODELS`.
 
 Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` and accept `response_format` = `json` (default), `verbose_json` or `text`; any other value (including `vtt`/`srt`) is a 400. `/inference` returns the full result (`text`, `language`, `segments[]` with words) for both `json` and `verbose_json`; `/v1/audio/transcriptions` returns only `{"text": ...}` for `json` and the full result for `verbose_json`. Only `/inference` accepts `vad`. Caption formats (VTT, SRT, YouTube) exist only on the jobs result route. Details: [word-level transcription](docs/word-level-transcription.md), [integration guide](docs/integration.md), [batch jobs API](docs/batch-jobs.md).
 
@@ -144,7 +146,7 @@ Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` a
 | `AUDITOR_STT_COMPUTE_TYPE` | (none) | faster-whisper compute type (`float16`, `int8`, `int8_float16`, ...). When unset: `float16` on CUDA, `int8` on CPU |
 | `AUDITOR_STT_DEFAULT_LANGUAGE` | `fi` | Language used when a request does not send `language` |
 | `AUDITOR_STT_PORT` | `8090` | Listen port. Read only by `auditor-stt serve` (default of `--port`) |
-| `AUDITOR_STT_API_KEY` | (none) | Bearer token. When set, every endpoint except `/health` requires it; when unset all endpoints are open. Required for `POST /model` |
+| `AUDITOR_STT_API_KEY` | (none) | Bearer token. When set, every endpoint except `/health`, `/live` and `/ready` requires it; when unset all endpoints are open. Required for `POST /model` |
 | `AUDITOR_STT_MAX_QUEUE` | `8` | Live requests allowed in the queue (the running one plus waiting ones) before a new live request is rejected with 503. Batch chunks are not counted and never rejected |
 | `AUDITOR_STT_DATA_DIR` | (none) | Job storage (`<dir>/jobs`). Unset: `/v1/jobs` answers 503. `auditor-stt serve` defaults it to `./data`; the Docker images set `/data` |
 | `AUDITOR_STT_MEDIA_ROOT` | (none) | Directory that `source_path` submissions must point into. Unset: `source_path` is rejected with 422 |
@@ -154,6 +156,7 @@ Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` a
 | `AUDITOR_STT_FLEET_URL` | (none) | Base URL of the fffleet orchestrator (or a single worker) |
 | `AUDITOR_STT_FLEET_TOKEN` / `AUDITOR_STT_FLEET_CLIENT_ID` + `AUDITOR_STT_FLEET_CLIENT_SECRET` | (none) | A static bearer token, or OAuth2 client credentials (scope `jobs`) for the fleet |
 | `AUDITOR_STT_PUBLIC_URL` | (none) | How fleet workers reach this service; the stripped audio is PUT to `<url>/v1/jobs/{id}/audio` |
+| `AUDITOR_STT_PROBE_TIMEOUT` | `10` | Seconds a submit waits for the duration probe (ffprobe, on the fleet for `source_url` jobs when `AUDITOR_STT_STRIP=fleet`). A failed probe leaves the length unknown |
 | `AUDITOR_STT_FLEET_FALLBACK` | `on` | `off`: fail the job instead of stripping locally when the fleet is unreachable |
 | `AUDITOR_STT_FLEET_POLL_SECONDS` / `AUDITOR_STT_FLEET_TIMEOUT_SECONDS` | `2` / `21600` | Fleet job polling interval and the longest a strip may take |
 | `AUDITOR_STT_LIVE_SOURCE_HOSTS` | (none) | Comma-separated host names (`*` patterns allowed) that live sessions may pull from. Unset: `/v1/live` is off ([details](docs/live-sessions.md)) |

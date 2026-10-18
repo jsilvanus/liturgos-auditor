@@ -29,7 +29,7 @@ Only final transcripts are sent, one per speech segment (cut at pauses of 0.6 s,
 ## How it runs
 
 1. With `AUDITOR_STT_STRIP=fleet` the service submits an fffleet **stream** job (`stdout: true`): `ffmpeg -rtsp_transport tcp -i <source> -vn -ac 1 -ar 16000 -f s16le pipe:1`, with `requires` from `AUDITOR_STT_LIVE_REQUIRES`. Use the generic `net:` capability so the job only lands on a worker that can reach the stream: start workers with `FFFLEET_PROBE=mediamtx=10.1.2.3:8554` and set `AUDITOR_STT_LIVE_REQUIRES=net:mediamtx`. The service reads the PCM from `GET /v1/jobs/{id}/stdout`. If the fleet is unreachable the same ffmpeg runs in this process, unless `AUDITOR_STT_FLEET_FALLBACK=off`. Without `AUDITOR_STT_STRIP=fleet` it always runs locally.
-2. A reader thread cuts the PCM into segments (Silero VAD, loudness as fallback). Segments go through the inference queue at live priority, so they overtake batch chunks. The previous text is passed as prompt.
+2. A reader thread cuts the PCM into segments (Silero VAD, loudness as fallback). Segments go through the inference queue at live priority, so they overtake batch chunks. While a session runs, `GET /status` reports `live.active` and queue estimates for batch jobs are marked as minimums. The previous text is passed as prompt.
 3. When the stream ends or breaks, the session reconnects with backoff (1 s up to 10 s) for `AUDITOR_STT_LIVE_RECONNECT_SECONDS` without receiving data, then ends with `source_lost`. Every attempt is its own fleet job, `auditor-live-<session>-<attempt>`.
 
 ## Wall time

@@ -421,13 +421,15 @@ class LiveManager:
         if not 0 <= delay_seconds <= self.config.max_delay_seconds:
             raise LiveError(422, f"delay_seconds must be between 0 and {self.config.max_delay_seconds:g}")
         self._purge()
-        active = [s for s in self.sessions.values() if not s.finished]
-        if len(active) >= self.config.max_sessions:
+        if len(self.active_sessions()) >= self.config.max_sessions:
             raise LiveError(429, f"At most {self.config.max_sessions} live sessions at a time")
         session = LiveSession(self, uuid.uuid4().hex[:16], source, language, prompt, client_ref, delay_seconds)
         self.sessions[session.id] = session
         session.start()
         return session
+
+    def active_sessions(self):
+        return [s for s in self.sessions.values() if not s.finished]
 
     def get(self, session_id):
         return self.sessions.get(session_id)

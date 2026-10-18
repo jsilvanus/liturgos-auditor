@@ -105,13 +105,13 @@ Set them with `-e` on `docker run`. For `docker compose`, only the variables lis
 
 ## API key
 
-To require authentication on every endpoint except `/health`:
+To require authentication on every endpoint except `/health`, `/live` and `/ready`:
 
 ```bash
 docker run -e AUDITOR_STT_API_KEY=your_secret ...
 ```
 
-Without a key, all endpoints are open, including `/inference` and `/v1/audio/transcriptions`. The `/health` endpoint never needs a key.
+Without a key, all endpoints are open, including `/inference` and `/v1/audio/transcriptions`. The `/health`, `/live` and `/ready` endpoints never need a key. Use `/live` for restart-on-failure checks and `/ready` for routing traffic: `/health` (and `/ready`) answer 503 while the model loads.
 
 Clients send the key as an `Authorization: Bearer` header:
 

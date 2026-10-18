@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 
 from .audio import temp_audio_file
 from .auth import require_api_key
+from .jobs.api import live_active, queue_blocks
 from .jobs.api import router as jobs_router
 from .jobs.fleet import FleetConfig, FleetStripper
 from .jobs.ingest import router as ingest_router
@@ -93,6 +94,7 @@ def _runner_options():
     options = {
         "fetch_limit": int(float(os.environ.get("AUDITOR_STT_MAX_UPLOAD_MB", "2048")) * 1024 * 1024),
         "fetch_timeout": float(os.environ.get("AUDITOR_STT_SOURCE_URL_TIMEOUT", "300")),
+        "probe_timeout": float(os.environ.get("AUDITOR_STT_PROBE_TIMEOUT", "10")),
     }
     if config.enabled:
         options.update(fleet=FleetStripper(config), public_url=config.public_url, fleet_fallback=config.fallback)
@@ -153,6 +155,7 @@ def create_app(
     async def lifespan(_app: FastAPI):
         logger.info("API key auth %s", "enabled" if app.state.api_key else "disabled")
         if startup_error is not None:
+            app.state.model_load_error = "The configured model could not be resolved"
             logger.error(
                 "Cannot use AUDITOR_STT_MODEL=%s (%s); /health will report not-loaded until a model is switched in",
                 model_source,
@@ -162,6 +165,7 @@ def create_app(
             try:
                 app.state.model_host.load()
             except ModelLoadError:
+                app.state.model_load_error = "The model failed to load"
                 logger.exception("Model failed to load at startup; /health will report not-loaded until fixed")
             if startup_label is not None:
                 _use_label(app.state.model_host, startup_label)
@@ -178,6 +182,7 @@ def create_app(
     app.state.model_host = host
     app.state.model_source = model_source  # the spec the current host was loaded from
     app.state.model_switching = False  # one POST /model at a time
+    app.state.model_load_error = None  # short, path-free reason the startup load failed (details are in the log)
     app.state.queue = queue or InferenceQueue(max_queue=int(os.environ.get("AUDITOR_STT_MAX_QUEUE", "8")))
     app.state.default_language = os.environ.get("AUDITOR_STT_DEFAULT_LANGUAGE", "fi")
     # The parameter wins over the environment; an empty key means no auth.
@@ -258,9 +263,43 @@ def create_app(
             return JSONResponse(body, status_code=503)
         return body
 
+    @app.get("/live")
+    async def live_probe():
+        # Liveness: the process answers. Never tied to the model, so a slow or failed load does not get it restarted.
+        return {"status": "ok"}
+
+    @app.get("/ready")
+    async def ready_probe():
+        body = model_status()
+        store = app.state.job_store
+        writable = store is None or os.access(store.root, os.W_OK)
+        if not body["loaded"]:
+            state = "failed" if app.state.model_load_error else "loading"
+        elif not writable:
+            state = "storage_unwritable"
+        else:
+            state = "ready"
+        body["state"] = state
+        body["error"] = app.state.model_load_error if state == "failed" else None
+        return JSONResponse(body, status_code=200 if state == "ready" else 503)
+
     @app.get("/status", dependencies=protected)
     async def status():
-        return {"queue": app.state.queue.stats(), "model": model_status()}
+        body = {"queue": app.state.queue.stats(), "model": model_status()}
+        runner, live = app.state.job_runner, app.state.live
+        if runner is not None and app.state.job_store is not None:
+            rate = runner.rate.rate()
+            body["jobs"] = queue_blocks(app.state)["summary"]
+            body["rate"] = None if rate is None else round(rate, 3)
+            body["rate_samples"] = runner.rate.sample_count()
+        else:
+            body.update(jobs=None, rate=None, rate_samples=0)
+        body["live"] = None if live is None else {
+            "active": live_active(app.state),
+            "sessions": len(live.active_sessions()),
+            "max_sessions": live.config.max_sessions,
+        }
+        return body
 
     def model_info():
         host = app.state.model_host
@@ -301,6 +340,7 @@ def create_app(
             # already took a reference to the old one finish on it.
             app.state.model_host = new_host
             app.state.model_source = spec
+            app.state.model_load_error = None
             logger.info(
                 "Switched model from %s to %s (%s/%s)", old_host.model_id, label, new_host.device, new_host.compute_type
             )

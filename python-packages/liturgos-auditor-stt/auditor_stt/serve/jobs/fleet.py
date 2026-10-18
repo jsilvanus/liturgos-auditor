@@ -96,6 +96,21 @@ def strip_spec(job_id, source_url, ingest_url):
     }
 
 
+def probe_spec(job_id, source_url, timeout_seconds):
+    """The fleet job: ffprobe reads the container's duration and returns it inline."""
+    return {
+        "contract": 1,
+        "id": f"auditor-probe-{job_id}",
+        "kind": "batch",
+        "type": "ffprobe",
+        "labels": {"app": "auditor-stt"},
+        "inputs": [{"name": "src", "uri": source_url}],
+        "outputs": [],
+        "ffprobe": {"show": ["format"]},
+        "timeoutMs": int(timeout_seconds * 1000),
+    }
+
+
 class FleetStripper:
     def __init__(self, config, *, client=None):
         self.config = config
@@ -183,6 +198,32 @@ class FleetStripper:
                 raise FleetJobError(scrub(_job_error(job)) or f"the fleet job ended as {state}")
             self._sleep(cancel)
 
+    def probe_duration(self, job_id, source_url, timeout):
+        """Seconds of audio in a url source, asked of a fleet worker's ffprobe. Blocking, at most about `timeout`."""
+        spec = probe_spec(job_id, source_url, timeout)
+        scrub = _scrubber(source_url)
+        response = self._request("POST", "/v1/jobs", json=spec)
+        if response.status_code == 422:
+            raise FleetJobError(scrub(_error_text(response)) or "the fleet rejected the probe")
+        if response.status_code not in (200, 201, 202):
+            raise FleetUnavailableError(f"fleet answered {response.status_code}")
+        fleet_id = spec["id"]
+        deadline = time.monotonic() + timeout
+        while True:
+            if time.monotonic() >= deadline:
+                self._cancel_quietly(fleet_id)
+                raise FleetJobError("the fleet did not probe the file in time")
+            response = self._request("GET", f"/v1/jobs/{fleet_id}")
+            if response.status_code != 200:
+                raise FleetUnavailableError(f"fleet answered {response.status_code}")
+            job = response.json()
+            state = job.get("state")
+            if state == "succeeded":
+                return _probed_duration(job)
+            if state in _FINAL:
+                raise FleetJobError(scrub(_job_error(job)) or f"the fleet probe ended as {state}")
+            time.sleep(min(self.config.poll_seconds, 0.5))
+
     def _sleep(self, cancel):
         if cancel is not None:
             cancel.wait(self.config.poll_seconds)
@@ -227,3 +268,16 @@ def _job_error(job):
     if isinstance(error, dict):
         return error.get("message") or error.get("code") or ""
     return str(error or "")
+
+
+def _probed_duration(job):
+    from .probe import ProbeError, parse_duration
+
+    for output in job.get("outputs") or []:
+        data = output.get("data") if isinstance(output, dict) else None
+        if isinstance(data, dict) and isinstance(data.get("format"), dict):
+            try:
+                return parse_duration(data["format"].get("duration"))
+            except ProbeError as exc:
+                raise FleetJobError(str(exc)) from None
+    raise FleetJobError("the fleet probe returned no result")
