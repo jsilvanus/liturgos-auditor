@@ -417,7 +417,7 @@ def test_preroll_request_validation_happens_before_session_creation():
     with client:
         missing = client.post(
             "/v1/live",
-            data={"metadata": json.dumps({"source": SOURCE, "has_preroll": True})},
+            files={"metadata": (None, json.dumps({"source": SOURCE, "has_preroll": True}))},
         )
         assert missing.status_code == 422
         empty = client.post(
