@@ -122,6 +122,7 @@ class LiveSession:
         self.state = "starting"
         self.reason = None
         self.created = manager.now()
+        self._timeline_origin = self.created
         self.ended_at = None
         self.transcripts = 0
         self.attempt = 0
@@ -350,6 +351,9 @@ class LiveSession:
                     # PCM has no capture timestamps: the pre-roll end is treated
                     # as the approximate boundary immediately before live PCM.
                     clock.anchor(preroll_samples, preroll_boundary_wall)
+                    # Relative transcript offsets start at the beginning of the
+                    # supplied audio timeline, not at the later HTTP request time.
+                    self._timeline_origin = preroll_boundary_wall - preroll_samples / SAMPLE_RATE
                     for segment in preroll_segments:
                         self._hand_over(clock, segment)
                     self._post(self._set_running)
@@ -441,8 +445,8 @@ class LiveSession:
                         "sequence": self.transcripts,
                         "text": text,
                         "language": result.get("language") or self.language,
-                        "start": round(wall_start - self.created, 3),
-                        "end": round(wall_end - self.created, 3),
+                        "start": round(wall_start - self._timeline_origin, 3),
+                        "end": round(wall_end - self._timeline_origin, 3),
                         "wall_start": iso(wall_start),
                         "wall_end": iso(wall_end),
                         "delay_seconds": self.delay_seconds,
