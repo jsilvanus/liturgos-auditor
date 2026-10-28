@@ -132,7 +132,7 @@ curl -X POST http://localhost:8090/v1/jobs \
 | `POST` | `/v1/live` | Start a pull live-transcription session; accepts legacy JSON or multipart metadata with optional PCM pre-roll | if key set |
 | `GET` | `/v1/live` | List live sessions | if key set |
 | `GET` | `/v1/live/{id}` | Live session status | if key set |
-| `GET` | `/v1/live/{id}/events` | Live transcript/status events via SSE | if key set |
+| `GET` | `/v1/live/{id}/events` | Live transcript/status events via SSE | if key set |\n| `GET` | `/v1/live/{id}/radio-delay` | Read adaptive radio delay target for relay | if key set |\n| `PUT` | `/v1/live/{id}/radio-delay` | Set bounded explicit radio delay target | if key set |\n| `POST` | `/v1/live/{id}/radio-delay/report` | Report caption/audio skew; update adaptive target | if key set |
 | `DELETE` | `/v1/live/{id}` | Stop a live session | if key set |
 
 "If key set" means: when `AUDITOR_STT_API_KEY` is set the request needs `Authorization: Bearer <key>` (otherwise 401); when it is not set the endpoint is open, `/inference` and `/v1/audio/transcriptions` included. `/health`, `/live` and `/ready` never need a key. `POST /model` is different: it answers 403 when no key is configured, and it only accepts `registry:<name>[@<version>]` specs and aliases listed in `AUDITOR_STT_ALLOWED_MODELS`.
