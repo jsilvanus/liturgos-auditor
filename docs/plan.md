@@ -109,3 +109,15 @@ Implemented in `auditor_stt/serve/live/api.py`: legacy JSON start requests remai
 **Remaining acceptance work:** run the current full Python test suite and OpenAPI/schema checks on the latest default branch; verify timeline/wall-clock boundary and overflow/cancellation/reconnect cases against the full test suite. End-to-end validation with the actual MediaMTX source and target deployment remains operational validation, not a code-completion claim.
 
 **Contract:** pre-roll is mono 16 kHz signed 16-bit little-endian PCM; its duration is inferred from payload size. PiVoice sends it directly to Auditor. PiGateway coordinates session lifecycle only and must never proxy audio bytes.
+
+
+## Adaptive radio delay control (2026-10-28)
+
+**Auditor-side implementation added; relay-side audio enforcement remains separate.**
+
+- Added `auditor_stt.serve.live.radio_delay.AdaptiveDelay`: starts at the minimum target, increases in bounded backoff steps when reported captions are late, and steps down only after sustained in-tolerance reports. Early captions do not increase delay.
+- Added authenticated live-session control endpoints: `GET /v1/live/{id}/radio-delay`, `PUT /v1/live/{id}/radio-delay`, and `POST /v1/live/{id}/radio-delay/report`.
+- Delay-target changes are emitted as SSE status events; policy targets are bounded by the configured live-session maximum.
+- Added focused policy tests and API documentation in `docs/live-sessions.md` and the README.
+
+**Not yet complete:** this is the Auditor-side control contract only. The relay must consume/apply the target to its rolling audio buffer and guarantee continuous audio with a monotonic release position. That is intentionally not implemented in this Auditor-only change. Tests have not been run in this environment; run the focused `tests/test_radio_delay.py` and full Python suite before treating it as verified.
