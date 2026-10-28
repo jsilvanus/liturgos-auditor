@@ -12,6 +12,20 @@ DELETE /v1/live/{id}          stop (cancels the fleet job)
 
 All routes need the API key (when one is set). `source` must be `rtsp://`, `rtsps://` or `srt://` and its host must match `AUDITOR_STT_LIVE_SOURCE_HOSTS`; without that setting the feature is off (503). More than `AUDITOR_STT_MAX_LIVE_SESSIONS` active sessions answer 429.
 
+## Optional PCM pre-roll
+
+Existing `application/json` start requests remain unchanged. To submit buffered audio before the pulled stream, send `multipart/form-data` with a `metadata` field containing the usual start JSON and a binary `preroll` part:
+
+```bash
+curl -X POST http://localhost:8090/v1/live \\
+  -F 'metadata={"source":"rtsp://mediamtx:8554/live/main","language":"fi","client_ref":"pivoice-main","has_preroll":true}' \\
+  -F 'preroll=@preroll.pcm;type=application/octet-stream'
+```
+
+The pre-roll must be raw **16 kHz mono signed 16-bit little-endian PCM (S16LE)**, not a WAV file. Its duration is inferred from its byte length (32,000 bytes per second); there is no duration field. `has_preroll` defaults to false. If true, a non-empty binary part is required. If false, an unexpected non-empty pre-roll part is rejected. JSON requests cannot set `has_preroll`; continue using JSON when there is no pre-roll.
+
+For safety, the pre-roll is limited to 10 MiB (about 5 minutes of PCM). The live source is opened first; the service then feeds pre-roll through the same segmenter before reading live PCM, so it is processed first and only once. Because raw PCM has no capture timestamps, the service treats the end of pre-roll as the approximate boundary immediately before live PCM begins; stream startup and transport latency can affect absolute wall-clock alignment.
+
 ## Events
 
 | event | data |
