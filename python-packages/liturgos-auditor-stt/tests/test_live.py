@@ -409,6 +409,8 @@ def test_multipart_preroll_is_processed_before_live_audio():
     # The first transcribed segment comes from pre-roll; live audio follows it.
     assert host.calls[0]["seconds"] == pytest.approx(2.3, abs=0.4)
     assert host.calls[1]["seconds"] == pytest.approx(2.3, abs=0.4)
+    transcripts = [event[2] for event in manager.get(response.json()["id"]).events if event[1] == "transcript"]
+    assert transcripts and all(event["start"] >= 0 for event in transcripts)
 
 
 def test_preroll_request_validation_happens_before_session_creation():
