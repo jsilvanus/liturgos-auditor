@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -64,6 +65,8 @@ async def start(request: Request):
             raise HTTPException(422, "Invalid live-session JSON metadata") from None
         if body.has_preroll:
             raise HTTPException(422, "has_preroll=true requires multipart/form-data with a preroll part")
+        if body.preroll_start_ms is not None:
+            raise HTTPException(422, "preroll_start_ms requires a multipart pre-roll payload")
     elif content_type == "multipart/form-data":
         form = await request.form()
         try:
@@ -76,6 +79,8 @@ async def start(request: Request):
             except (ValueError, ValidationError):
                 raise HTTPException(422, "Invalid live-session multipart metadata") from None
             uploaded = form.get("preroll")
+            if body.preroll_start_ms is not None and (not math.isfinite(body.preroll_start_ms) or body.preroll_start_ms < 0):
+                raise HTTPException(422, "preroll_start_ms must be a finite non-negative epoch-millisecond timestamp")
             if body.has_preroll:
                 if uploaded is None or not hasattr(uploaded, "read"):
                     raise HTTPException(422, "has_preroll=true requires a binary 'preroll' part")
@@ -86,6 +91,8 @@ async def start(request: Request):
                     raise HTTPException(413, f"preroll exceeds the {MAX_PREROLL_BYTES}-byte limit")
                 if len(preroll) % 2:
                     raise HTTPException(422, "preroll PCM byte length must be even (S16LE)")
+            elif body.preroll_start_ms is not None:
+                raise HTTPException(422, "preroll_start_ms requires has_preroll=true")
             elif uploaded is not None:
                 if not hasattr(uploaded, "read"):
                     raise HTTPException(422, "A preroll part requires has_preroll=true")
