@@ -24,7 +24,7 @@ curl -X POST http://localhost:8090/v1/live \\
 
 The pre-roll must be raw **16 kHz mono signed 16-bit little-endian PCM (S16LE)**, not a WAV file. Its duration is inferred from its byte length (32,000 bytes per second); there is no duration field. `has_preroll` defaults to false. If true, a non-empty binary part is required. If false, an unexpected non-empty pre-roll part is rejected. JSON requests may omit `has_preroll` or set it to false; true requires multipart because it needs the binary payload.
 
-For safety, the pre-roll is limited to 10 MiB (about 5 minutes of PCM). The live source is opened first; the service then feeds pre-roll through the same segmenter before reading live PCM, so it is processed first and only once. Because raw PCM has no capture timestamps, the service treats the end of pre-roll as the approximate boundary immediately before live PCM begins; stream startup and transport latency can affect absolute wall-clock alignment.
+For safety, the pre-roll is limited to 10 MiB (about 5 minutes of PCM). The live source is opened and read immediately into a bounded FIFO (up to 32 seconds of PCM) while pre-roll is segmented. Auditor then feeds pre-roll through the same segmenter before draining the FIFO and continuing with live PCM, so audio is processed in order and only once. If the FIFO overflows, a `status` event with `state: "dropped"` and `reason: "live_buffer_overflow"` is emitted rather than silently hiding the loss. Because raw PCM has no capture timestamps, the service anchors the end of pre-roll near live-source startup; startup and transport latency can affect absolute wall-clock alignment.
 
 ## Events
 
