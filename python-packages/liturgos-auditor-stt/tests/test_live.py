@@ -429,13 +429,13 @@ def test_preroll_request_validation_happens_before_session_creation():
         odd = client.post(
             "/v1/live",
             data={"metadata": json.dumps({"source": SOURCE, "has_preroll": True})},
-            files={"preroll": ("preroll.pcm", b"\\x00", "application/octet-stream")},
+            files={"preroll": ("preroll.pcm", b"a", "application/octet-stream")},
         )
         assert odd.status_code == 422
         unexpected = client.post(
             "/v1/live",
             data={"metadata": json.dumps({"source": SOURCE, "has_preroll": False})},
-            files={"preroll": ("preroll.pcm", b"\\x00\\x00", "application/octet-stream")},
+            files={"preroll": ("preroll.pcm", b"ab", "application/octet-stream")},
         )
         assert unexpected.status_code == 422
         malformed = client.post(
