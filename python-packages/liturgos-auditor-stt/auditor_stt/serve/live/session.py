@@ -119,6 +119,7 @@ class LiveSession:
         self.client_ref = client_ref
         self.delay_seconds = delay_seconds
         self._preroll = preroll
+        self._preroll_start_wall = preroll_start_ms / 1000.0 if preroll_start_ms is not None else None
         self.state = "starting"
         self.reason = None
         self.created = manager.now()
