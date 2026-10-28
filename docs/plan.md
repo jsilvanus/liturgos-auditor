@@ -98,3 +98,14 @@ Because PCM contains no embedded timestamps, exact capture-time alignment cannot
 - The pre-roll is processed by the existing live segmentation/inference pipeline before live audio, once and in order.
 - Live PCM arriving during pre-roll processing is buffered within a defined bound and handled explicitly if the bound is exceeded.
 - API validation, time semantics, and the request format are documented and covered by tests.
+
+
+## Implementation status (reviewed 2026-10-28)
+
+**Status: implemented; automated verification is present.** The earlier sentence above saying this is a plan only is stale and superseded by this status.
+
+Implemented in `auditor_stt/serve/live/api.py`: legacy JSON start requests remain supported; multipart requests accept JSON `metadata` and optional binary `preroll`; `has_preroll` validation, a 10 MiB payload ceiling, non-empty/even-byte checks, and clear 4xx responses are enforced before session creation. The live session receives the PCM pre-roll, and `tests/test_live.py` covers multipart pre-roll processing before live audio. `docs/live-sessions.md` documents the PCM format and bounded live buffering.
+
+**Remaining acceptance work:** run the current full Python test suite and OpenAPI/schema checks on the latest default branch; verify timeline/wall-clock boundary and overflow/cancellation/reconnect cases against the full test suite. End-to-end validation with the actual MediaMTX source and target deployment remains operational validation, not a code-completion claim.
+
+**Contract:** pre-roll is mono 16 kHz signed 16-bit little-endian PCM; its duration is inferred from payload size. PiVoice sends it directly to Auditor. PiGateway coordinates session lifecycle only and must never proxy audio bytes.
