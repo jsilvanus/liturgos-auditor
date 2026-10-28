@@ -10,11 +10,21 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .session import LiveError
+from .radio_delay import AdaptiveDelay
 
 router = APIRouter(prefix="/v1/live", tags=["live"])
 
 HEARTBEAT_SECONDS = 15.0
 MAX_PREROLL_BYTES = 10 * 1024 * 1024  # 5 minutes at 16 kHz mono PCM16
+
+
+class DelayReport(BaseModel):
+    mismatch_ms: float
+    tolerance_ms: float = 250.0
+
+
+class DelayRequest(BaseModel):
+    delay_seconds: float
 
 
 class StartRequest(BaseModel):
@@ -95,6 +105,55 @@ async def start(request: Request):
     except LiveError as exc:
         raise HTTPException(exc.status, exc.message) from None
     return {**session.info(), "events_url": f"/v1/live/{session.id}/events"}
+
+
+@router.post("/{session_id}/radio-delay/report")
+async def report_radio_sync(session_id: str, body: DelayReport, request: Request):
+    """Accept measured caption/audio skew and return the bounded target delay.
+
+    The relay remains responsible for applying this target to its audio buffer.
+    """
+    session = _session(request, session_id)
+    if not hasattr(session, "radio_delay_controller"):
+        session.radio_delay_controller = AdaptiveDelay(
+            minimum_seconds=0.0,
+            maximum_seconds=_manager(request).config.max_delay_seconds,
+        )
+    try:
+        result = session.radio_delay_controller.report(body.mismatch_ms, body.tolerance_ms)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    session._publish("status", {"state": "radio_delay_target", **result})
+    return result
+
+
+@router.put("/{session_id}/radio-delay")
+async def request_radio_delay(session_id: str, body: DelayRequest, request: Request):
+    """Set an explicit bounded target; this does not itself manipulate audio."""
+    session = _session(request, session_id)
+    if not hasattr(session, "radio_delay_controller"):
+        session.radio_delay_controller = AdaptiveDelay(
+            minimum_seconds=0.0,
+            maximum_seconds=_manager(request).config.max_delay_seconds,
+        )
+    try:
+        result = session.radio_delay_controller.request(body.delay_seconds)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    session._publish("status", {"state": "radio_delay_target", **result})
+    return result
+
+
+@router.get("/{session_id}/radio-delay")
+async def get_radio_delay(session_id: str, request: Request):
+    """Read the current radio-delay target for the relay to apply."""
+    session = _session(request, session_id)
+    if not hasattr(session, "radio_delay_controller"):
+        session.radio_delay_controller = AdaptiveDelay(
+            minimum_seconds=0.0,
+            maximum_seconds=_manager(request).config.max_delay_seconds,
+        )
+    return session.radio_delay_controller.snapshot()
 
 
 @router.get("")
