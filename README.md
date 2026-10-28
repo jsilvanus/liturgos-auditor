@@ -129,10 +129,15 @@ curl -X POST http://localhost:8090/v1/jobs \
 | `GET` | `/v1/jobs/{id}` | Job status and progress | if key set |
 | `GET` | `/v1/jobs/{id}/result` | Transcript as `json`, `vtt`, `srt`, `text` or `youtube` | if key set |
 | `DELETE` | `/v1/jobs/{id}` | Cancel a running job (202) or delete a job (204) | if key set |
+| `POST` | `/v1/live` | Start a pull live-transcription session; accepts legacy JSON or multipart metadata with optional PCM pre-roll | if key set |
+| `GET` | `/v1/live` | List live sessions | if key set |
+| `GET` | `/v1/live/{id}` | Live session status | if key set |
+| `GET` | `/v1/live/{id}/events` | Live transcript/status events via SSE | if key set |
+| `DELETE` | `/v1/live/{id}` | Stop a live session | if key set |
 
 "If key set" means: when `AUDITOR_STT_API_KEY` is set the request needs `Authorization: Bearer <key>` (otherwise 401); when it is not set the endpoint is open, `/inference` and `/v1/audio/transcriptions` included. `/health`, `/live` and `/ready` never need a key. `POST /model` is different: it answers 403 when no key is configured, and it only accepts `registry:<name>[@<version>]` specs and aliases listed in `AUDITOR_STT_ALLOWED_MODELS`.
 
-Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` and accept `response_format` = `json` (default), `verbose_json` or `text`; any other value (including `vtt`/`srt`) is a 400. `/inference` returns the full result (`text`, `language`, `segments[]` with words) for both `json` and `verbose_json`; `/v1/audio/transcriptions` returns only `{"text": ...}` for `json` and the full result for `verbose_json`. Only `/inference` accepts `vad`. Caption formats (VTT, SRT, YouTube) exist only on the jobs result route. Details: [word-level transcription](docs/word-level-transcription.md), [integration guide](docs/integration.md), [batch jobs API](docs/batch-jobs.md).
+Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` and accept `response_format` = `json` (default), `verbose_json` or `text`; any other value (including `vtt`/`srt`) is a 400. `/inference` returns the full result (`text`, `language`, `segments[]` with words) for both `json` and `verbose_json`; `/v1/audio/transcriptions` returns only `{"text": ...}` for `json` and the full result for `verbose_json`. Only `/inference` accepts `vad`. Caption formats (VTT, SRT, YouTube) exist only on the jobs result route. Details: [word-level transcription](docs/word-level-transcription.md), [integration guide](docs/integration.md), [batch jobs API](docs/batch-jobs.md), [live sessions and PCM pre-roll](docs/live-sessions.md).
 
 ## Environment variables
 
