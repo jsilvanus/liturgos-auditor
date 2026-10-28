@@ -110,7 +110,7 @@ def check_source(url, hosts):
 
 
 class LiveSession:
-    def __init__(self, manager, session_id, source, language, prompt, client_ref, delay_seconds=0.0, preroll=None):
+    def __init__(self, manager, session_id, source, language, prompt, client_ref, delay_seconds=0.0, preroll=None, preroll_start_ms=None):
         self.manager = manager
         self.id = session_id
         self.source = source
@@ -301,7 +301,12 @@ class LiveSession:
         live_chunks = thread_queue.Queue(maxsize=128)  # 32 seconds at READ_BYTES per chunk
         reader_done = threading.Event()
         buffer_overflow = threading.Event()
-        preroll_boundary_wall = self.manager.now() if preroll_samples else None
+        preroll_start_wall = self._preroll_start_wall
+        preroll_boundary_wall = (
+            preroll_start_wall + preroll_samples / SAMPLE_RATE
+            if preroll_samples and preroll_start_wall is not None
+            else self.manager.now() if preroll_samples else None
+        )
         reader_error = []
 
         def pump_live_pcm():
@@ -348,8 +353,8 @@ class LiveSession:
                     samples = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
                     preroll_segments.extend(segmenter.feed(samples))
                 if not self._stop.is_set():
-                    # PCM has no capture timestamps: the pre-roll end is treated
-                    # as the approximate boundary immediately before live PCM.
+                    # Prefer the sender's capture-time anchor. Older clients omit it,
+                    # in which case retain the legacy approximation at session start.
                     clock.anchor(preroll_samples, preroll_boundary_wall)
                     # Relative transcript offsets start at the beginning of the
                     # supplied audio timeline, not at the later HTTP request time.
@@ -494,7 +499,7 @@ class LiveManager:
 
     # --- sessions --------------------------------------------------------
 
-    def create(self, source, language, prompt=None, client_ref=None, delay_seconds=None, *, preroll=None):
+    def create(self, source, language, prompt=None, client_ref=None, delay_seconds=None, *, preroll=None, preroll_start_ms=None):
         check_source(source, self.config.source_hosts)
         if delay_seconds is None:
             delay_seconds = self.config.default_delay_seconds
@@ -503,7 +508,10 @@ class LiveManager:
         self._purge()
         if len(self.active_sessions()) >= self.config.max_sessions:
             raise LiveError(429, f"At most {self.config.max_sessions} live sessions at a time")
-        session = LiveSession(self, uuid.uuid4().hex[:16], source, language, prompt, client_ref, delay_seconds, preroll=preroll)
+        session = LiveSession(
+            self, uuid.uuid4().hex[:16], source, language, prompt, client_ref, delay_seconds,
+            preroll=preroll, preroll_start_ms=preroll_start_ms,
+        )
         self.sessions[session.id] = session
         session.start()
         return session
