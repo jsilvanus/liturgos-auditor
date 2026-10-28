@@ -109,7 +109,7 @@ def check_source(url, hosts):
 
 
 class LiveSession:
-    def __init__(self, manager, session_id, source, language, prompt, client_ref, delay_seconds=0.0):
+    def __init__(self, manager, session_id, source, language, prompt, client_ref, delay_seconds=0.0, preroll=None):
         self.manager = manager
         self.id = session_id
         self.source = source
@@ -117,6 +117,7 @@ class LiveSession:
         self.prompt = prompt
         self.client_ref = client_ref
         self.delay_seconds = delay_seconds
+        self._preroll = preroll
         self.state = "starting"
         self.reason = None
         self.created = manager.now()
@@ -286,8 +287,32 @@ class LiveSession:
         if self._stop.is_set():
             self._close_stream()
             return 0
-        total = 0
+        preroll = self._preroll
+        # Do not consume pre-roll until a live source has opened successfully;
+        # if the first connection fails, the next attempt can still use it.
+        if preroll is not None:
+            self._preroll = None
+        preroll_samples = len(preroll) // 2 if preroll else 0
+        total = preroll_samples
         try:
+            if preroll_samples:
+                # Segment pre-roll first, then anchor and enqueue it. All samples
+                # use the same segmenter/sample timeline as the live stream.
+                preroll_segments = []
+                for offset in range(0, len(preroll), READ_BYTES):
+                    if self._stop.is_set():
+                        break
+                    data = preroll[offset : offset + READ_BYTES]
+                    data = data[: len(data) // 2 * 2]
+                    samples = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+                    preroll_segments.extend(segmenter.feed(samples))
+                if not self._stop.is_set():
+                    # PCM has no capture timestamps: the pre-roll end is treated
+                    # as the approximate boundary immediately before live PCM.
+                    clock.anchor(preroll_samples, self.manager.now())
+                    for segment in preroll_segments:
+                        self._hand_over(clock, segment)
+                    self._post(self._set_running)
             while not self._stop.is_set():
                 data = stream.read(READ_BYTES)
                 if not data:
@@ -295,7 +320,7 @@ class LiveSession:
                 data = data[: len(data) // 2 * 2]
                 samples = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
                 total += len(samples)
-                if total == len(samples):
+                if total == len(samples) and not clock.anchored:
                     self._post(self._set_running)
                 drift = clock.check(total, caught_up=len(data) == READ_BYTES and self._queue.qsize() == 0)
                 if drift is not None:
@@ -414,7 +439,7 @@ class LiveManager:
 
     # --- sessions --------------------------------------------------------
 
-    def create(self, source, language, prompt=None, client_ref=None, delay_seconds=None):
+    def create(self, source, language, prompt=None, client_ref=None, delay_seconds=None, *, preroll=None):
         check_source(source, self.config.source_hosts)
         if delay_seconds is None:
             delay_seconds = self.config.default_delay_seconds
@@ -423,7 +448,7 @@ class LiveManager:
         self._purge()
         if len(self.active_sessions()) >= self.config.max_sessions:
             raise LiveError(429, f"At most {self.config.max_sessions} live sessions at a time")
-        session = LiveSession(self, uuid.uuid4().hex[:16], source, language, prompt, client_ref, delay_seconds)
+        session = LiveSession(self, uuid.uuid4().hex[:16], source, language, prompt, client_ref, delay_seconds, preroll=preroll)
         self.sessions[session.id] = session
         session.start()
         return session
