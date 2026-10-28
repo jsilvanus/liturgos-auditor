@@ -300,6 +300,7 @@ class LiveSession:
         live_chunks = thread_queue.Queue(maxsize=128)  # 32 seconds at READ_BYTES per chunk
         reader_done = threading.Event()
         buffer_overflow = threading.Event()
+        preroll_boundary_wall = self.manager.now() if preroll_samples else None
         reader_error = []
 
         def pump_live_pcm():
@@ -348,7 +349,7 @@ class LiveSession:
                 if not self._stop.is_set():
                     # PCM has no capture timestamps: the pre-roll end is treated
                     # as the approximate boundary immediately before live PCM.
-                    clock.anchor(preroll_samples, self.manager.now())
+                    clock.anchor(preroll_samples, preroll_boundary_wall)
                     for segment in preroll_segments:
                         self._hand_over(clock, segment)
                     self._post(self._set_running)
