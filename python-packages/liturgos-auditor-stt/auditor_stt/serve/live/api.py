@@ -36,6 +36,8 @@ class StartRequest(BaseModel):
     delay_seconds: Optional[float] = None
     has_preroll: bool = False
     preroll_start_ms: Optional[float] = None
+    # {mode: sse|push, url, token}; validated by the manager so errors are specific (422).
+    delivery: Optional[dict] = None
 
 
 def _manager(request: Request):
@@ -109,6 +111,7 @@ async def start(request: Request):
         session = manager.create(
             body.source, body.language or request.app.state.default_language, body.prompt, body.client_ref,
             body.delay_seconds, preroll=preroll, preroll_start_ms=body.preroll_start_ms,
+            delivery=body.delivery,
         )
     except LiveError as exc:
         raise HTTPException(exc.status, exc.message) from None

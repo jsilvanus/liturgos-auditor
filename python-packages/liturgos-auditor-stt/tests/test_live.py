@@ -666,3 +666,227 @@ def test_delay_config_from_env():
     )
     assert config.default_delay_seconds == 5.0 and config.max_delay_seconds == 60.0
     assert LiveConfig.from_env({}).default_delay_seconds == 0.0
+
+
+# --- push delivery -------------------------------------------------------------
+
+PUSH_URL = "https://receiver.test/hook"
+TOKEN = "tok-s3cret-value"
+
+
+class Receiver:
+    """A fake push receiver: an httpx transport that records requests and answers from a script."""
+
+    def __init__(self, statuses=()):
+        self.statuses = list(statuses)
+        self.requests = []  # (arrival time, headers, body)
+        self.attempts = 0
+
+    def __call__(self, request):
+        self.attempts += 1
+        status = self.statuses.pop(0) if self.statuses else 200
+        if status == "error":
+            raise httpx.ConnectError("boom", request=request)
+        if status < 300:
+            self.requests.append((time.time(), dict(request.headers), json.loads(request.content)))
+        return httpx.Response(status)
+
+    @property
+    def transport(self):
+        return httpx.MockTransport(self)
+
+    def events(self):
+        return [event for _, _, body in self.requests for event in body["events"]]
+
+
+def push_client(receiver, hosts=("receiver.test",), **kwargs):
+    config = LiveConfig(source_hosts=["mediamtx.test"], reconnect_seconds=0.2, push_hosts=list(hosts))
+    client, manager, attempts = make_client(Host(), [ListStream(pcm(speech_audio()))], config, **kwargs)
+    manager.push_transport = receiver.transport
+    return client, manager
+
+
+def push_body(**delivery):
+    return {"source": SOURCE, "delivery": {"mode": "push", "url": PUSH_URL, "token": TOKEN, **delivery}}
+
+
+def test_push_delivers_ordered_transcripts_with_bearer_and_session_id():
+    receiver = Receiver()
+    client, manager = push_client(receiver)
+    with client:
+        body = client.post("/v1/live", json=push_body()).json()
+        sse = read_events(client, body["id"])
+        info = wait_ended(client, body["id"])
+    assert body["delivery"]["mode"] == "push" and body["delivery"]["host"] == "receiver.test"
+    pushed = receiver.events()
+    assert [e["sequence"] for e in pushed] == [1, 2]
+    assert all(b["session_id"] == body["id"] for _, _, b in receiver.requests)
+    assert all(h["authorization"] == f"Bearer {TOKEN}" for _, h, _ in receiver.requests)
+    # Same objects as the SSE data, and SSE keeps emitting in push mode.
+    assert pushed == [json.loads(e["data"]) for e in sse if e["event"] == "transcript"]
+    assert info["delivery"] == {"mode": "push", "host": "receiver.test", "pushed": 2, "failed": 0, "dropped": 0}
+
+
+def test_push_batches_events_and_flushes_within_a_second(monkeypatch):
+    from auditor_stt.serve.live import push
+
+    receiver = Receiver()
+
+    async def go():
+        delivery = push.PushDelivery("sid", PUSH_URL, None, "receiver.test", transport=receiver.transport)
+        delivery.start()
+        for i in range(45):
+            delivery.submit({"sequence": i + 1})
+        started = time.monotonic()
+        while delivery.pushed < 45 and time.monotonic() - started < 5:
+            await asyncio.sleep(0.02)
+        await delivery.close()
+        return delivery
+
+    import asyncio
+
+    delivery = asyncio.run(go())
+    sizes = [len(body["events"]) for _, _, body in receiver.requests]
+    assert sizes == [20, 20, 5]
+    assert [e["sequence"] for e in receiver.events()] == list(range(1, 46))
+    assert "authorization" not in receiver.requests[0][1]  # token is optional
+    assert delivery.pushed == 45
+
+
+def test_push_retries_after_failures_without_reordering(monkeypatch):
+    from auditor_stt.serve.live import push
+
+    monkeypatch.setattr(push, "BACKOFF_START", 0.01)
+    receiver = Receiver(["error", 503, 429, 401])
+    client, manager = push_client(receiver)
+    with client:
+        sid = client.post("/v1/live", json=push_body()).json()["id"]
+        info = wait_ended(client, sid)
+    assert receiver.attempts >= 5
+    assert [e["sequence"] for e in receiver.events()] == [1, 2]
+    assert info["delivery"]["pushed"] == 2 and info["delivery"]["failed"] == 0
+
+
+def test_push_drops_a_batch_on_other_4xx():
+    receiver = Receiver([400])
+    client, manager = push_client(receiver)
+    with client:
+        sid = client.post("/v1/live", json=push_body()).json()["id"]
+        info = wait_ended(client, sid)
+    assert receiver.attempts == 1
+    assert info["delivery"]["failed"] == 2 and info["delivery"]["pushed"] == 0
+    assert receiver.requests == []
+
+
+def test_push_queue_is_bounded_and_counts_drops():
+    from auditor_stt.serve.live import push
+
+    receiver = Receiver()
+
+    async def go():
+        delivery = push.PushDelivery("sid", PUSH_URL, None, "receiver.test", transport=receiver.transport)
+        for i in range(push.QUEUE_LIMIT + 30):  # worker not started: nothing drains
+            delivery.submit({"sequence": i + 1})
+        return delivery
+
+    import asyncio
+
+    delivery = asyncio.run(go())
+    assert len(delivery._queue) == push.QUEUE_LIMIT and delivery.dropped == 30
+    assert delivery._queue[0]["sequence"] == 31
+
+
+def test_push_is_held_until_the_delay_has_elapsed():
+    from datetime import datetime, timezone
+
+    receiver = Receiver()
+    audio = np.concatenate([quiet(0.5), tone(1), quiet(1.5)])
+    config = LiveConfig(source_hosts=["mediamtx.test"], reconnect_seconds=0.2, push_hosts=["receiver.test"])
+    client, manager, _ = make_client(Host(), [ListStream(pcm(audio))], config)
+    manager.push_transport = receiver.transport
+    with client:
+        sid = client.post("/v1/live", json={**push_body(), "delay_seconds": 1.0}).json()["id"]
+        wait_ended(client, sid)
+    arrival, _, body = receiver.requests[0]
+    event = body["events"][0]
+    wall_end = datetime.strptime(event["wall_end"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc).timestamp()
+    assert event["delay_seconds"] == 1.0
+    assert arrival >= wall_end + 1.0 - 0.05
+
+
+@pytest.mark.parametrize("hosts", [(), ("other.test",)])
+def test_push_is_refused_unless_the_host_is_allowed(hosts):
+    client, manager = push_client(Receiver(), hosts=hosts)
+    with client:
+        response = client.post("/v1/live", json=push_body())
+    assert response.status_code == 422
+    assert TOKEN not in response.text and PUSH_URL not in response.text
+    assert not manager.sessions
+    if not hosts:
+        assert "AUDITOR_STT_LIVE_PUSH_HOSTS" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "delivery",
+    [
+        {"mode": "push", "url": "ftp://receiver.test/x"},
+        {"mode": "push", "url": "https://user:pw@receiver.test/x"},
+        {"mode": "push", "url": "https://receiver.test@evil.test/x"},
+        {"mode": "push"},
+        {"mode": "pull"},
+        {"mode": "sse", "url": PUSH_URL},
+        {"mode": "push", "url": PUSH_URL, "token": "a\nb"},
+        {"mode": "push", "url": PUSH_URL, "extra": 1},
+        "push",
+    ],
+)
+def test_invalid_delivery_is_422(delivery):
+    client, manager = push_client(Receiver())
+    with client:
+        response = client.post("/v1/live", json={"source": SOURCE, "delivery": delivery})
+    assert response.status_code == 422
+    assert not manager.sessions
+
+
+def test_push_works_through_multipart_metadata():
+    receiver = Receiver()
+    client, manager = push_client(receiver)
+    with client:
+        response = client.post("/v1/live", files={"metadata": (None, json.dumps(push_body()))})
+        assert response.status_code == 202
+        wait_ended(client, response.json()["id"])
+    assert [e["sequence"] for e in receiver.events()] == [1, 2]
+
+
+def test_token_never_leaks(caplog):
+    caplog.set_level("DEBUG")
+    receiver = Receiver([403, "error", 500])
+    client, manager = push_client(receiver)
+    with client:
+        body = client.post("/v1/live", json=push_body()).json()
+        sse = read_events(client, body["id"])
+        info = wait_ended(client, body["id"])
+        listing = client.get("/v1/live").text
+    blobs = [json.dumps(body), json.dumps(info), listing, json.dumps(sse), caplog.text]
+    assert all(TOKEN not in blob for blob in blobs)
+    assert "token" not in json.dumps(info)
+
+
+def test_sse_is_the_default_and_unchanged():
+    receiver = Receiver()
+    client, manager = push_client(receiver)
+    with client:
+        body = client.post("/v1/live", json={"source": SOURCE}).json()
+        events = read_events(client, body["id"])
+        info = wait_ended(client, body["id"])
+        explicit = client.post("/v1/live", json={"source": SOURCE, "delivery": {"mode": "sse"}})
+    assert body["delivery"] == {"mode": "sse"} and info["delivery"] == {"mode": "sse"}
+    assert explicit.status_code == 202
+    assert [json.loads(e["data"])["sequence"] for e in events if e["event"] == "transcript"] == [1, 2]
+    assert receiver.attempts == 0
+
+
+def test_live_config_reads_push_hosts_from_env():
+    config = LiveConfig.from_env({"AUDITOR_STT_LIVE_PUSH_HOSTS": "Receiver.test, *.hooks.test"})
+    assert config.push_hosts == ["receiver.test", "*.hooks.test"]
+    assert LiveConfig.from_env({}).push_hosts == []

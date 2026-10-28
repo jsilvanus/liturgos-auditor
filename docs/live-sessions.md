@@ -26,6 +26,30 @@ The pre-roll must be raw **16 kHz mono signed 16-bit little-endian PCM (S16LE)**
 
 For safety, the pre-roll is limited to 10 MiB (about 5 minutes of PCM). The live source is opened and read immediately into a bounded FIFO (up to 32 seconds of PCM) while pre-roll is segmented. Auditor then feeds pre-roll through the same segmenter before draining the FIFO and continuing with live PCM, so audio is processed in order and only once. If the FIFO overflows, a `status` event with `state: "dropped"` and `reason: "live_buffer_overflow"` is emitted rather than silently hiding the loss. Because raw PCM has no capture timestamps, the service anchors the end of pre-roll near live-source startup; startup and transport latency can affect absolute wall-clock alignment.
 
+## Delivery modes
+
+By default, sessions publish events via Server-Sent Events on `GET /v1/live/{id}/events`.
+Optionally, transcripts can also be pushed directly to a receiver (e.g. `pigateway`) via HTTP POST by including a `delivery` object in the start request:
+
+```json
+{
+  "source": "rtsp://mediamtx:8554/live/main",
+  "delivery": {
+    "mode": "push",
+    "url": "https://gateway.internal:3100/api/v1/transcripts",
+    "token": "secret-token"
+  }
+}
+```
+
+- `mode`: `"sse"` (default, url/token omitted) or `"push"`.
+- `url`: target receiver URL (`http://` or `https://`). The host must match an allowed pattern in `AUDITOR_STT_LIVE_PUSH_HOSTS` (comma-separated list, e.g. `gateway.internal,*.lan`). If push hosts are not configured, push mode is refused with 422.
+- `token`: optional bearer token. When set, requests are sent with `Authorization: Bearer <token>`. The token is never exposed in status or logs.
+- In push mode, transcripts are batched (up to 20 events) and sent as JSON:
+  `{"session_id": "<id>", "events": [<transcript>]}`.
+  Network errors and 5xx/429/401/403 responses are retried with exponential backoff.
+- SSE events continue to be emitted even in push mode.
+
 ## Events
 
 | event | data |

@@ -18,6 +18,9 @@ know when the session started. Sessions are not durable.
 `delay_seconds` holds each transcript back until `wall_end + delay_seconds`, so
 text can line up with a stream that is itself delayed (a broadcast delay). The
 times in the event stay those of the source; only the moment of publishing moves.
+
+Per session, `delivery` may also push each transcript (after that hold) to a receiver
+URL, see push.py; SSE events are emitted regardless.
 """
 
 import asyncio
@@ -38,6 +41,7 @@ from ..jobs.fleet import FleetConfig, FleetStripper, FleetUnavailableError, _scr
 from ..jobs.pipeline import carry_prompt
 from ..queue import QueueFullError
 from .clock import WallClock, iso
+from .push import PushDelivery, parse_delivery
 from .segmenter import SAMPLE_RATE, Segmenter, vad_speech_ranges
 from .source import LIVE_SCHEMES, FleetPcmStream, LocalPcmStream
 
@@ -69,6 +73,7 @@ class LiveConfig:
     clock_drift_seconds: float = 1.0
     default_delay_seconds: float = 0.0
     max_delay_seconds: float = 120.0
+    push_hosts: list = field(default_factory=list)  # fnmatch patterns of push-delivery receivers; empty refuses push mode
 
     @classmethod
     def from_env(cls, env=None):
@@ -80,6 +85,7 @@ class LiveConfig:
         config = cls(
             source_hosts=[host.lower() for host in split("AUDITOR_STT_LIVE_SOURCE_HOSTS")],
             requires=split("AUDITOR_STT_LIVE_REQUIRES"),
+            push_hosts=[host.lower() for host in split("AUDITOR_STT_LIVE_PUSH_HOSTS")],
         )
         for name, attr, cast in (
             ("AUDITOR_STT_MAX_LIVE_SESSIONS", "max_sessions", int),
@@ -110,7 +116,7 @@ def check_source(url, hosts):
 
 
 class LiveSession:
-    def __init__(self, manager, session_id, source, language, prompt, client_ref, delay_seconds=0.0, preroll=None, preroll_start_ms=None):
+    def __init__(self, manager, session_id, source, language, prompt, client_ref, delay_seconds=0.0, preroll=None, preroll_start_ms=None, delivery=None):
         self.manager = manager
         self.id = session_id
         self.source = source
@@ -138,6 +144,8 @@ class LiveSession:
         self._tasks = []
         self._scrub = _scrubber(source)
         self._first_wall = None
+        self._delivery = delivery  # parsed push settings (holds the token) or None: SSE only
+        self._push = None
 
     # --- public ----------------------------------------------------------
 
@@ -153,6 +161,11 @@ class LiveSession:
             "attempts": self.attempt,
             "created": iso(self.created),
             "ended": iso(self.ended_at) if self.ended_at else None,
+            "delivery": (
+                {"mode": "push", "host": self._delivery["host"], **(self._push.stats() if self._push else {})}
+                if self._delivery
+                else {"mode": "sse"}
+            ),
         }
 
     @property
@@ -179,6 +192,12 @@ class LiveSession:
         self._loop = asyncio.get_running_loop()
         self._queue = asyncio.Queue()
         self._out = asyncio.Queue()
+        if self._delivery:
+            self._push = PushDelivery(
+                self.id, self._delivery["url"], self._delivery["token"], self._delivery["host"],
+                transport=self.manager.push_transport,
+            )
+            self._push.start()
         self._tasks = [
             asyncio.create_task(self._run()),
             asyncio.create_task(self._transcribe()),
@@ -200,6 +219,8 @@ class LiveSession:
                     await task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+        if self._push is not None:
+            await self._push.close()
         self._end()
 
     # --- events ----------------------------------------------------------
@@ -270,6 +291,8 @@ class LiveSession:
         # Let the transcriber finish what it has and the delay run out, then close the session.
         await asyncio.shield(self._tasks[1])
         await asyncio.shield(self._tasks[2])
+        if self._push is not None:
+            await self._push.close()
         self._end()
 
     def _read_attempt(self):
@@ -473,6 +496,8 @@ class LiveSession:
                     break
                 await asyncio.sleep(min(remaining, 0.25))
             self._publish("transcript", data)
+            if self._push is not None:
+                self._push.submit(data)
 
 
 class LiveManager:
@@ -487,6 +512,7 @@ class LiveManager:
         stream_factory=None,
         speech_ranges=None,
         now=time.time,
+        push_transport=None,
     ):
         self.config = config
         self.host_getter = host_getter
@@ -496,12 +522,14 @@ class LiveManager:
         self._stream_factory = stream_factory
         self.speech_ranges = speech_ranges or vad_speech_ranges
         self.now = now
+        self.push_transport = push_transport  # httpx transport override for push delivery (tests)
         self.sessions = {}
 
     # --- sessions --------------------------------------------------------
 
-    def create(self, source, language, prompt=None, client_ref=None, delay_seconds=None, *, preroll=None, preroll_start_ms=None):
+    def create(self, source, language, prompt=None, client_ref=None, delay_seconds=None, *, preroll=None, preroll_start_ms=None, delivery=None):
         check_source(source, self.config.source_hosts)
+        delivery = parse_delivery(delivery, self.config.push_hosts, lambda message: LiveError(422, message))
         if delay_seconds is None:
             delay_seconds = self.config.default_delay_seconds
         if not 0 <= delay_seconds <= self.config.max_delay_seconds:
@@ -511,7 +539,7 @@ class LiveManager:
             raise LiveError(429, f"At most {self.config.max_sessions} live sessions at a time")
         session = LiveSession(
             self, uuid.uuid4().hex[:16], source, language, prompt, client_ref, delay_seconds,
-            preroll=preroll, preroll_start_ms=preroll_start_ms,
+            preroll=preroll, preroll_start_ms=preroll_start_ms, delivery=delivery,
         )
         self.sessions[session.id] = session
         session.start()

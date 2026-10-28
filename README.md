@@ -165,6 +165,7 @@ Live routes (`/inference`, `/v1/audio/transcriptions`) take a multipart `file` a
 | `AUDITOR_STT_FLEET_FALLBACK` | `on` | `off`: fail the job instead of stripping locally when the fleet is unreachable |
 | `AUDITOR_STT_FLEET_POLL_SECONDS` / `AUDITOR_STT_FLEET_TIMEOUT_SECONDS` | `2` / `21600` | Fleet job polling interval and the longest a strip may take |
 | `AUDITOR_STT_LIVE_SOURCE_HOSTS` | (none) | Comma-separated host names (`*` patterns allowed) that live sessions may pull from. Unset: `/v1/live` is off ([details](docs/live-sessions.md)) |
+| `AUDITOR_STT_LIVE_PUSH_HOSTS` | (none) | Comma-separated host names (`*` patterns allowed) that live sessions may push transcripts to. Empty: push delivery is refused |
 | `AUDITOR_STT_LIVE_REQUIRES` | (none) | fffleet capabilities a live stream job needs, e.g. `net:mediamtx` |
 | `AUDITOR_STT_MAX_LIVE_SESSIONS` | `2` | Concurrent live sessions (one model is shared) |
 | `AUDITOR_STT_LIVE_RECONNECT_SECONDS` | `120` | How long a session keeps retrying a lost stream before it ends |
