@@ -24,6 +24,7 @@ import asyncio
 import fnmatch
 import logging
 import os
+import queue as thread_queue
 import threading
 import time
 import uuid
@@ -294,6 +295,44 @@ class LiveSession:
             self._preroll = None
         preroll_samples = len(preroll) // 2 if preroll else 0
         total = preroll_samples
+        # Read live PCM concurrently with pre-roll segmentation. The bounded
+        # FIFO prevents a slow pre-roll from allowing unlimited memory growth.
+        live_chunks = thread_queue.Queue(maxsize=128)  # 32 seconds at READ_BYTES per chunk
+        reader_done = threading.Event()
+        buffer_overflow = threading.Event()
+        reader_error = []
+
+        def pump_live_pcm():
+            try:
+                while not self._stop.is_set():
+                    data = stream.read(READ_BYTES)
+                    if not data:
+                        break
+                    data = data[: len(data) // 2 * 2]
+                    if not data:
+                        continue
+                    while not self._stop.is_set():
+                        try:
+                            live_chunks.put(data, timeout=0.1)
+                            break
+                        except thread_queue.Full:
+                            buffer_overflow.set()
+                            break
+                    if buffer_overflow.is_set():
+                        break
+            except Exception as exc:  # noqa: BLE001
+                reader_error.append(exc)
+            finally:
+                reader_done.set()
+                while not self._stop.is_set():
+                    try:
+                        live_chunks.put(None, timeout=0.1)
+                        break
+                    except thread_queue.Full:
+                        continue
+
+        reader = threading.Thread(target=pump_live_pcm, name=f"auditor-live-reader-{self.id}", daemon=True)
+        reader.start()
         try:
             if preroll_samples:
                 # Segment pre-roll first, then anchor and enqueue it. All samples
@@ -314,19 +353,30 @@ class LiveSession:
                         self._hand_over(clock, segment)
                     self._post(self._set_running)
             while not self._stop.is_set():
-                data = stream.read(READ_BYTES)
-                if not data:
+                try:
+                    data = live_chunks.get(timeout=0.1)
+                except thread_queue.Empty:
+                    if reader_done.is_set():
+                        break
+                    continue
+                if data is None:
                     break
-                data = data[: len(data) // 2 * 2]
                 samples = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
                 total += len(samples)
                 if total == len(samples) and not clock.anchored:
                     self._post(self._set_running)
-                drift = clock.check(total, caught_up=len(data) == READ_BYTES and self._queue.qsize() == 0)
+                drift = clock.check(
+                    total,
+                    caught_up=live_chunks.empty() and len(data) == READ_BYTES and self._queue.qsize() == 0,
+                )
                 if drift is not None:
                     self._post(self._publish, "status", {"state": "clock_reset", "drift_seconds": round(drift, 3)})
                 for segment in segmenter.feed(samples):
                     self._hand_over(clock, segment)
+            if buffer_overflow.is_set():
+                self._post(self._publish, "status", {"state": "dropped", "reason": "live_buffer_overflow"})
+            if reader_error:
+                raise reader_error[0]
             tail = segmenter.flush() if not self._stop.is_set() else None
             if tail is not None:
                 self._hand_over(clock, tail)
