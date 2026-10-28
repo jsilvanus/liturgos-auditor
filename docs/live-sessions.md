@@ -57,3 +57,18 @@ Sessions live in memory. A restart ends them (the SSE connection closes); the cl
 ## Not verified
 
 Everything is tested against a fake fleet and synthetic audio. It has not run against a real MediaMTX, fleet or GPU.
+
+
+## Adaptive radio delay control
+
+Auditor exposes a per-live-session target delay for the radio relay. The policy starts at the minimum (0 seconds by default), increases the target when a measured caption-late mismatch is reported, and decreases it by a small step only after a sustained run of in-tolerance reports. The target is bounded by `AUDITOR_STT_LIVE_MAX_DELAY_SECONDS`. Early captions do not trigger a delay increase.
+
+Report measured skew with `POST /v1/live/{id}/radio-delay/report`:
+
+```json
+{"mismatch_ms": 800, "tolerance_ms": 250}
+```
+
+Positive `mismatch_ms` means the caption arrived/presented too late relative to its audio. Negative values indicate early captions. The response contains `target_delay_seconds` and a `reason`. Use `PUT /v1/live/{id}/radio-delay` for a bounded explicit target, or `GET` to read the current target. Invalid/out-of-range explicit targets return 422. Updates are also emitted as SSE `status` events with `state: "radio_delay_target"`.
+
+**Important boundary:** this is the Auditor-side control contract and policy only. The relay must read/apply the target to its own rolling audio buffer and keep its release position monotonic. Auditor does not buffer or output listener audio, and changing this target alone does not delay playback. The relay-side implementation is a separate change. The in-memory target is not durable across process restarts.
