@@ -30,7 +30,7 @@ For safety, the pre-roll is limited to 10 MiB (about 5 minutes of PCM). The live
 
 | event | data |
 |---|---|
-| `transcript` | `sequence`, `text`, `language`, `start`, `end` (seconds since the session began), `wall_start`, `wall_end` (UTC, ISO 8601 with milliseconds), `delay_seconds` |
+| `transcript` | `sequence`, `text`, `language`, `start`, `end` (seconds since the audio timeline begins; with pre-roll, from the start of the pre-roll), `wall_start`, `wall_end` (UTC, ISO 8601 with milliseconds), `delay_seconds` |
 | `status` | `state`: `starting`, `running`, `reconnecting`, `clock_reset` (`drift_seconds`), `dropped` (a segment skipped because the model was busy or behind), `ended` (`reason`: `stopped`, `source_lost`, `error`, `shutdown`) |
 | `error` | `message`, with URLs and credentials removed |
 
