@@ -380,6 +380,83 @@ def test_source_validation():
     assert caught.value.status == 403
 
 
+def test_multipart_preroll_is_processed_before_live_audio():
+    class CapturingHost(Host):
+        def transcribe_array(self, samples, language, **options):
+            self.calls.append({"seconds": len(samples) / RATE, "rms": float(np.sqrt(np.mean(samples ** 2))), "language": language, **options})
+            return {"text": f" words {len(self.calls)} ", "language": language, "segments": []}
+
+    host = CapturingHost()
+    config = LiveConfig(source_hosts=["mediamtx.test"], reconnect_seconds=0.2, clock_drift_seconds=1e9)
+    preroll = pcm(np.concatenate([quiet(0.5), tone(2), quiet(1.5)]))
+    live = pcm(np.concatenate([quiet(0.5), tone(2), quiet(2)]))
+    client, manager, _ = make_client(host, [ListStream(live)], config, now=lambda: 1759656000.0)
+    metadata = {
+        "source": SOURCE,
+        "language": "fi",
+        "client_ref": "pivoice-main",
+        "has_preroll": True,
+    }
+    with client:
+        response = client.post(
+            "/v1/live",
+            data={"metadata": json.dumps(metadata)},
+            files={"preroll": ("preroll.pcm", preroll, "application/octet-stream")},
+        )
+        assert response.status_code == 202, response.text
+        info = wait_ended(client, response.json()["id"])
+    assert info["transcripts"] >= 2
+    # The first transcribed segment comes from pre-roll; live audio follows it.
+    assert host.calls[0]["seconds"] == pytest.approx(2.3, abs=0.4)
+    assert host.calls[1]["seconds"] == pytest.approx(2.3, abs=0.4)
+
+
+def test_preroll_request_validation_happens_before_session_creation():
+    host = Host()
+    client, manager, _ = make_client(host, [ListStream(b""), ListStream(b"")])
+    with client:
+        missing = client.post(
+            "/v1/live",
+            data={"metadata": json.dumps({"source": SOURCE, "has_preroll": True})},
+        )
+        assert missing.status_code == 422
+        empty = client.post(
+            "/v1/live",
+            data={"metadata": json.dumps({"source": SOURCE, "has_preroll": True})},
+            files={"preroll": ("preroll.pcm", b"", "application/octet-stream")},
+        )
+        assert empty.status_code == 422
+        odd = client.post(
+            "/v1/live",
+            data={"metadata": json.dumps({"source": SOURCE, "has_preroll": True})},
+            files={"preroll": ("preroll.pcm", b"\\x00", "application/octet-stream")},
+        )
+        assert odd.status_code == 422
+        unexpected = client.post(
+            "/v1/live",
+            data={"metadata": json.dumps({"source": SOURCE, "has_preroll": False})},
+            files={"preroll": ("preroll.pcm", b"\\x00\\x00", "application/octet-stream")},
+        )
+        assert unexpected.status_code == 422
+        malformed = client.post(
+            "/v1/live",
+            data={"metadata": "{not json"},
+            files={"preroll": ("preroll.pcm", b"\\x00\\x00", "application/octet-stream")},
+        )
+        assert malformed.status_code == 422
+        assert manager.active_sessions() == []
+
+
+def test_json_live_start_remains_backward_compatible_and_rejects_preroll_flag():
+    client, manager, _ = make_client(Host(), [ListStream(b""), ListStream(b"")])
+    with client:
+        legacy = client.post("/v1/live", json={"source": SOURCE})
+        assert legacy.status_code == 202
+        client.delete(f"/v1/live/{legacy.json()['id']}")
+        flagged = client.post("/v1/live", json={"source": SOURCE, "has_preroll": True})
+        assert flagged.status_code == 422
+
+
 def test_routes_report_disabled_unknown_and_busy():
     client = TestClient(create_app(model_host=Host(), api_key=""))
     with client:
