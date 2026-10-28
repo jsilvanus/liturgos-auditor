@@ -121,3 +121,9 @@ Implemented in `auditor_stt/serve/live/api.py`: legacy JSON start requests remai
 - Added focused policy tests and API documentation in `docs/live-sessions.md` and the README.
 
 **Not yet complete:** this is the Auditor-side control contract only. The relay must consume/apply the target to its rolling audio buffer and guarantee continuous audio with a monotonic release position. That is intentionally not implemented in this Auditor-only change. Tests have not been run in this environment; run the focused `tests/test_radio_delay.py` and full Python suite before treating it as verified.
+
+
+## Implementation update (2026-10-28)
+
+- Multipart live-session metadata now rejects non-finite or negative `preroll_start_ms` values and rejects the timestamp when no pre-roll payload is supplied. This avoids assigning invalid wall-clock anchors to a session timeline.
+- Automated verification was not run as part of implementation; the verification agent owns the Python suite and API contract checks.
