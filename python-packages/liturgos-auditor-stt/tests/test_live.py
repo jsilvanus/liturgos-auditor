@@ -396,6 +396,7 @@ def test_multipart_preroll_is_processed_before_live_audio():
         "language": "fi",
         "client_ref": "pivoice-main",
         "has_preroll": True,
+        "preroll_start_ms": 1759655990000,
     }
     with client:
         response = client.post(
@@ -411,6 +412,9 @@ def test_multipart_preroll_is_processed_before_live_audio():
     assert host.calls[1]["seconds"] == pytest.approx(2.3, abs=0.4)
     transcripts = [event[2] for event in manager.get(response.json()["id"]).events if event[1] == "transcript"]
     assert transcripts and all(event["start"] >= 0 for event in transcripts)
+    # The wall clock follows the supplied capture-time start, not HTTP/session arrival.
+    assert transcripts[0]["wall_start"] >= iso(1759655990.0)
+    assert transcripts[0]["wall_start"] < iso(1759655993.0)
 
 
 def test_preroll_request_validation_happens_before_session_creation():
