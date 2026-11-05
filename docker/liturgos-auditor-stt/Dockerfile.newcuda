@@ -1,0 +1,38 @@
+FROM dhi.io/nvidia-cuda:13.2-cudnn
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       python3 \
+       python3-pip \
+       ffmpeg \
+       ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY auditor_stt ./auditor_stt
+RUN pip3 install --no-cache-dir . \
+  && chmod -R a+rX,go-w /app
+
+# User setup stays the same...
+RUN groupadd --system --gid 10001 auditor \
+  && useradd --system --uid 10001 --gid auditor --create-home --home-dir /home/auditor \
+       --shell /usr/sbin/nologin auditor \
+  && mkdir -p /data /models/registry \
+  && chown -R 10001:10001 /data /models /home/auditor \
+  && chmod 1777 /home/auditor
+
+ENV HOME=/home/auditor \
+    AUDITOR_STT_PORT=8090 \
+    AUDITOR_STT_DEVICE=auto \
+    AUDITOR_STT_DEFAULT_LANGUAGE=fi \
+    AUDITOR_STT_DATA_DIR=/data \
+    AUDITOR_STT_REGISTRY_DIR=/models/registry
+
+USER 10001:10001
+
+EXPOSE 8090
+CMD ["auditor-stt", "serve"]
+

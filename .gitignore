@@ -24,3 +24,10 @@ python-packages/*/models/
 *.ckpt
 *.onnx
 *.gguf
+
+# local preview frames, not for commit
+tmp/
+
+.claude/
+*.vtt
+
