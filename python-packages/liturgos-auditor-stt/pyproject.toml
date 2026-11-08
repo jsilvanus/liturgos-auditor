@@ -31,7 +31,12 @@ dependencies = [
     "python-multipart>=0.0.9",
     # 1.2 is the series verified for array input, initial_prompt, hotwords,
     # vad_filter and clip_timestamps (saarnavideo pins the same floor).
+    # Note: faster-whisper <= 1.2.1 still passes metadata_errors="ignore" to av.open(),
+    # which PyAV >= 19.0.0 removed; auditor_stt/serve/model.py wraps av.open to strip
+    # that argument until SYSTRAN/faster-whisper PR #1495 / commit 2ce7f9d
+    # ("Adopt av.open usage according to PyAV 19.0.0") lands in a post-1.2.1 PyPI release.
     "faster-whisper>=1.2",
+    "av>=14",
     # Imported directly by the batch-job audio code (jobs/wav.py, jobs/chunking.py).
     "numpy>=1.24",
     "httpx>=0.27",

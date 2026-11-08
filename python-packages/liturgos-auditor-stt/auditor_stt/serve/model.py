@@ -5,11 +5,25 @@ import logging
 import threading
 from typing import Optional
 
+import av
 import numpy
 
 # PyAV is faster-whisper's own decoder dependency; its errors are how an
 # undecodable upload surfaces (av.error.InvalidDataError is not an OSError).
 from av.error import FFmpegError
+
+# Upstream PyAV >= 19.0.0 removed the metadata_errors kwarg from av.open().
+# faster-whisper <= 1.2.1 still passes metadata_errors="ignore" inside decode_audio().
+# Wrap av.open to strip the argument until faster-whisper upstream includes commit 2ce7f9d.
+_orig_av_open = av.open
+
+
+def _compat_av_open(*args, **kwargs):
+    kwargs.pop("metadata_errors", None)
+    return _orig_av_open(*args, **kwargs)
+
+
+av.open = _compat_av_open
 
 logger = logging.getLogger(__name__)
 

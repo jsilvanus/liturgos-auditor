@@ -90,3 +90,39 @@ def test_model_maps_real_decode_failure_to_audio_decode_error(monkeypatch, tmp_p
 
     # The raw PyAV message embeds the server's temp path; the client-facing one must not.
     assert str(tmp_path) not in str(excinfo.value)
+
+
+def test_model_decodes_valid_wav_under_pyav19_without_type_error(monkeypatch, tmp_path):
+    import faster_whisper
+    import numpy as np
+    from faster_whisper.audio import decode_audio
+
+    from auditor_stt.serve.jobs.wav import write_pcm16_wav
+
+    class _DecodingModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def transcribe(self, audio, **kwargs):
+            if isinstance(audio, str):
+                samples = decode_audio(audio, sampling_rate=16000)
+                assert samples.shape == (16000,)
+            seg = SimpleNamespace(start=0.0, end=1.0, text=" terve", words=[])
+            return iter([seg]), SimpleNamespace(language="fi")
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", _DecodingModel)
+    host = ModelHost("test-model", device="cpu")
+    host.load()
+
+    wav_bytes_path = tmp_path / "sample.wav"
+    write_pcm16_wav(wav_bytes_path, np.zeros(16000, dtype=np.float32), 16000)
+
+    app = create_app(model_host=host, queue=InferenceQueue(max_queue=8))
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("sample.wav", wav_bytes_path.read_bytes(), "audio/wav")},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"text": "terve"}
+

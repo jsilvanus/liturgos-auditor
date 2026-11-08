@@ -183,3 +183,30 @@ def test_timeout_kills_ffmpeg_and_reports_it(tmp_path, hanging_ffmpeg):
     with pytest.raises(MediaDecodeError, match="timed out"):
         normalize_to_wav(source, tmp_path / "audio.wav", timeout=0.05)
     assert process.killed
+
+
+def test_pyav_decode_audio_strips_metadata_errors_kwarg(tmp_path, monkeypatch):
+    # Regression for PyAV >= 19.0.0 + faster-whisper <= 1.2.1: decode_audio() passes
+    # metadata_errors="ignore" to av.open(), which PyAV 19 removed. Importing
+    # auditor_stt.serve.model installs the compatibility wrapper around av.open.
+    import auditor_stt.serve.model as model_mod
+    from faster_whisper.audio import decode_audio
+
+    wav_path = tmp_path / "sample.wav"
+    tone = (0.1 * np.sin(2 * np.pi * 440 * np.arange(16000, dtype=np.float32) / 16000)).astype(np.float32)
+    write_pcm16_wav(wav_path, tone, 16000)
+
+    real_orig_open = model_mod._orig_av_open
+
+    def strict_pyav19_open(*args, **kwargs):
+        if "metadata_errors" in kwargs:
+            raise TypeError("open() got an unexpected keyword argument 'metadata_errors'")
+        return real_orig_open(*args, **kwargs)
+
+    monkeypatch.setattr(model_mod, "_orig_av_open", strict_pyav19_open)
+
+    decoded = decode_audio(str(wav_path), sampling_rate=16000)
+    assert decoded.dtype == np.float32
+    assert decoded.shape == (16000,)
+    assert np.abs(decoded).max() > 0.05
+
