@@ -148,6 +148,22 @@ auditor-stt export --model models/runs/run-001 --out models/exports/run-001-ct2 
 - `--out` must not exist. `ct2-transformers-converter` must be on PATH; it is installed together with `ctranslate2`, a dependency of faster-whisper.
 - `_merged_hf` is a full fp32 copy of the model (about 3 GB for the turbo preset: 809 M parameters times 4 bytes). It is not needed for serving, and `models register` never copies it. It is what `eval --backend hf` needs.
 
+### 3.5b `export-onnx`: to the Aidos Engine (Dictator on phones)
+
+The Aidos Engine runs Whisper on ONNX Runtime (decision D62 in jsilvanus/aidos), so a CTranslate2 export cannot be used there. `export-onnx` writes the Whisper package layout its `WhisperPackage` loader reads:
+
+```
+pip install -e ".[onnx]"
+auditor-stt export-onnx --model models/runs/run-001 --out models/exports/run-001-onnx --merge-lora --quantize int8
+auditor-stt eval --backend onnx --model models/exports/run-001-onnx --dataset data/datasets/<version> --baseline models/exports/run-001-ct2
+```
+
+- Runs `optimum-cli export onnx --task automatic-speech-recognition-with-past` on the checkpoint (a LoRA run is merged first, same as `export`), then leaves `encoder_model*.onnx`, `decoder_model_merged*.onnx`, `tokenizer.json`, `preprocessor_config.json`, `generation_config.json` and `config.json` in `--out`, and refuses an output the engine could not load (missing tokenizer, no merged decoder, mel bins not 80 or 128).
+- `--quantize int8` replaces the fp32 graphs with dynamic-int8 ones named `*_quantized.onnx`, about a quarter of the size and the intended phone variant. The engine prefers the plain fp32 pair when both are present, so the fp32 graphs are removed.
+- `eval --backend onnx` scores the package on ONNX Runtime through optimum, on the same split as the CT2 export, so the two WERs can be compared. It checks the exported graphs and weights, not the engine's own Kotlin decoder, and has no long-form check. Compare it with the CT2 result (`--baseline` takes a CT2 directory) before copying a package to a phone.
+- Copy the package to a directory named after the model id in the engine's models directory (or point `AIDOS_STT_MODEL_DIR` at it for its opt-in tests). `models/` is git-ignored; never commit the package, and keep it out of the public repository (see CLAUDE.md).
+- Mechanics tested with a faked `optimum-cli`; a real export has not been run in CI.
+
 ### 3.6 `eval`: the gate
 
 ```

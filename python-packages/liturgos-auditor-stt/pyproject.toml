@@ -60,6 +60,14 @@ training = [
     "accelerate>=0.30",
     "peft>=0.10",
 ]
+# `export-onnx` and `eval --backend onnx`: the Whisper package format of the Aidos Engine.
+onnx = [
+    "optimum[onnxruntime]>=1.23",
+    "onnxruntime>=1.18",
+    "transformers>=4.45",
+    "torch>=2.2",
+    "peft>=0.10",
+]
 
 [project.scripts]
 auditor-stt = "auditor_stt.cli:main"

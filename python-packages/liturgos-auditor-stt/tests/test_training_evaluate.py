@@ -204,7 +204,7 @@ def test_evaluate_model_forwards_backend_options(tmp_path, monkeypatch):
 
 def test_open_backend_rejects_an_unknown_backend():
     with pytest.raises(ValueError, match="backend must be one of"):
-        evaluate.open_backend("onnx", "m")
+        evaluate.open_backend("tflite", "m")
 
 
 # --- the ct2 backend (through ModelHost) -----------------------------------------------
