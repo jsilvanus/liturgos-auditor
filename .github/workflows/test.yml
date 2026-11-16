@@ -23,11 +23,4 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Test
         working-directory: python-packages/liturgos-auditor-stt
-        # Two tests in test_live.py fail deterministically on main, before this workflow existed
-        # (the session closes its push delivery after one attempt, but they expect retries to continue;
-        # and a clock-reset status assertion). Deselected here so CI can guard everything else; fix them
-        # and delete the --deselect lines.
-        run: >
-          python -m pytest -q
-          --deselect tests/test_live.py::test_push_retries_after_failures_without_reordering
-          --deselect tests/test_live.py::test_clock_reset_status_when_the_source_skips
+        run: python -m pytest -q
