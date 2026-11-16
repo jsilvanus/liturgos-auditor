@@ -195,13 +195,17 @@ class PushDelivery:
                 logger.warning("Push to %s for session %s refused (HTTP %s); retrying", self.host, self.session_id, status)
             elif status is None or status >= 500:
                 logger.debug("Push to %s for session %s failed (%s); retrying", self.host, self.session_id, reason or status)
-            if self._closing:  # one best-effort attempt while shutting down
+            if self._expired():  # the close window is spent: stop retrying
                 self.failed += len(batch)
                 return
-            try:
-                await asyncio.wait_for(self._wake_on_close(), backoff)
-            except asyncio.TimeoutError:
-                pass
+            if self._closing:
+                # Shutting down: keep retrying with backoff, but only until the close deadline.
+                await asyncio.sleep(min(backoff, max(self._deadline - time.monotonic(), 0.0)))
+            else:
+                try:
+                    await asyncio.wait_for(self._wake_on_close(), backoff)
+                except asyncio.TimeoutError:
+                    pass
             backoff = min(backoff * 2, BACKOFF_CAP)
 
     async def _wake_on_close(self):

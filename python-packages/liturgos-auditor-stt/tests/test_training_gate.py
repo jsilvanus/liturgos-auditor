@@ -494,7 +494,7 @@ def test_cli_parses_every_option(scoring, monkeypatch):
     assert (seen["longform_tolerance"], seen["min_improvement"], seen["require_longform"]) == (0.1, 0.05, True)
 
 
-@pytest.mark.parametrize("bad", [["--backend", "onnx"], ["--device", "tpu"], ["--min-improvement", "lots"]])
+@pytest.mark.parametrize("bad", [["--backend", "tflite"], ["--device", "tpu"], ["--min-improvement", "lots"]])
 def test_cli_rejects_invalid_values(scoring, bad):
     with pytest.raises(SystemExit) as excinfo:
         cli.main(_eval_argv(scoring, *bad))

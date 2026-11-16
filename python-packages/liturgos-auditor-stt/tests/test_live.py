@@ -151,11 +151,12 @@ class Host:
 
 
 class ListStream:
-    def __init__(self, data, hold=None):
+    def __init__(self, data, hold=None, read_delay=0.0):
         self._data = data
         self._pos = 0
         self.closed = False
         self._hold = hold
+        self._read_delay = read_delay
 
     def read(self, size):
         if self.closed:
@@ -166,6 +167,8 @@ class ListStream:
             return b""
         chunk = self._data[self._pos : self._pos + size]
         self._pos += len(chunk)
+        if self._read_delay:
+            time.sleep(self._read_delay)
         return chunk
 
     def close(self):
@@ -352,7 +355,10 @@ def test_clock_reset_status_when_the_source_skips():
         wall[0] += 0.5  # each look at the clock costs half a second: more than the stream delivers
         return wall[0]
 
-    client, manager, _ = make_client(host, [ListStream(data)], now=now)
+    # A reader that delivers instantly leaves the consumer with a backlog, and a backlog is never compared
+    # with the wall clock (clock.check caught_up), so the test would depend on thread timing. A small delay per
+    # read keeps the consumer caught up.
+    client, manager, _ = make_client(host, [ListStream(data, read_delay=0.02)], now=now)
     with client:
         sid = client.post("/v1/live", json={"source": SOURCE}).json()["id"]
         wait_ended(client, sid)
@@ -765,6 +771,20 @@ def test_push_retries_after_failures_without_reordering(monkeypatch):
     assert receiver.attempts >= 5
     assert [e["sequence"] for e in receiver.events()] == [1, 2]
     assert info["delivery"]["pushed"] == 2 and info["delivery"]["failed"] == 0
+
+
+def test_push_gives_up_when_the_close_window_is_spent(monkeypatch):
+    from auditor_stt.serve.live import push
+
+    monkeypatch.setattr(push, "BACKOFF_START", 0.01)
+    monkeypatch.setattr(push, "CLOSE_SECONDS", 0.3)
+    receiver = Receiver([503] * 1000)
+    client, manager = push_client(receiver)
+    with client:
+        sid = client.post("/v1/live", json=push_body()).json()["id"]
+        info = wait_ended(client, sid)
+    assert receiver.attempts > 1, "a failed attempt during shutdown is retried within the window"
+    assert info["delivery"]["pushed"] == 0 and info["delivery"]["failed"] == 2
 
 
 def test_push_drops_a_batch_on_other_4xx():

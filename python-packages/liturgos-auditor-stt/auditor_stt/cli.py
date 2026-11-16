@@ -201,6 +201,18 @@ def _export(args):
         return 1
 
 
+def _export_onnx(args):
+    import subprocess
+
+    from .training.export_onnx import PackageError, export
+
+    try:
+        export(model_dir=args.model, output_dir=args.out, quantize=args.quantize, merge_lora=args.merge_lora)
+    except (ValueError, FileExistsError, RuntimeError, subprocess.CalledProcessError, PackageError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def _eval(args):
     """Exit code 0: gate passed, 3: gate failed, 1: could not evaluate. Prints metrics, never transcript text."""
     import json
@@ -460,16 +472,28 @@ def main(argv=None):
                           help="Merge a LoRA adapter into its base model first (required for adapter directories)")
     export_p.set_defaults(func=_export)
 
+    onnx_p = sub.add_parser(
+        "export-onnx",
+        help="Convert a Transformers Whisper checkpoint to an ONNX package for the Aidos Engine (Dictator on phones)",
+    )
+    onnx_p.add_argument("--model", required=True)
+    onnx_p.add_argument("--out", required=True, help="New directory; keep it outside the source tree (weights are never committed)")
+    onnx_p.add_argument("--quantize", default="none", choices=["none", "int8"])
+    onnx_p.add_argument("--merge-lora", action="store_true",
+                        help="Merge a LoRA adapter into its base model first (required for adapter directories)")
+    onnx_p.set_defaults(func=_export_onnx)
+
     eval_p = sub.add_parser(
         "eval",
         help="Evaluation gate: score a model against the zero-shot baseline on the test split and write gate.json "
              "(exit code 0 passed, 3 failed, 1 error)",
     )
     eval_p.add_argument("--model", required=True,
-                        help="Candidate: a CTranslate2 model directory (a Hugging Face checkpoint with --backend hf)")
-    eval_p.add_argument("--backend", choices=["ct2", "hf"], default="ct2",
+                        help="Candidate: a CTranslate2 model directory (a Hugging Face checkpoint with --backend hf, an export-onnx package with --backend onnx)")
+    eval_p.add_argument("--backend", choices=["ct2", "hf", "onnx"], default="ct2",
                         help="ct2 scores the exported model through the serving code (default); "
-                             "hf scores a merged Hugging Face checkpoint (needs torch; no long-form check)")
+                             "hf scores a merged Hugging Face checkpoint (needs torch; no long-form check); "
+                             "onnx scores an `export-onnx` package on ONNX Runtime, the runtime the Aidos Engine uses (needs the onnx extra; no long-form check)")
     eval_p.add_argument("--dataset", required=True, help="Dataset directory made by `dataset build`")
     eval_p.add_argument("--split", default="test")
     eval_p.add_argument("--baseline", default="large-v3-turbo",

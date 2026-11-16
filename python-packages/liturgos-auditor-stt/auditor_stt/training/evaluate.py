@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 16000
 DEFAULT_LANGUAGE = "fi"
 DEFAULT_BASELINE = "large-v3-turbo"
-BACKENDS = ("ct2", "hf")
+BACKENDS = ("ct2", "hf", "onnx")
 
 # faster-whisper decodes 30 s windows, so no segment is longer than that; a model
 # that stopped emitting timestamp tokens produces window-long segments instead.
@@ -213,11 +213,45 @@ def hf_backend(model_dir, language=DEFAULT_LANGUAGE, device="auto", max_new_toke
     return transcribe, close
 
 
+def onnx_backend(model_dir, language=DEFAULT_LANGUAGE, device="auto", max_new_tokens=225):
+    """(transcribe, close) for an `export-onnx` package, run on ONNX Runtime like the Aidos Engine does.
+
+    Uses optimum's ORT wrapper rather than the engine's own decoder, so it validates the exported
+    graphs and weights (the thing this repo produces), not the engine's Kotlin decoding loop.
+    """
+    from .export_onnx import check_package
+
+    model_dir = Path(model_dir)
+    check_package(model_dir)
+    from optimum.onnxruntime import ORTModelForSpeechSeq2Seq
+    from transformers import WhisperProcessor
+
+    processor = WhisperProcessor.from_pretrained(str(model_dir), language=language, task="transcribe")
+    provider = "CUDAExecutionProvider" if device == "cuda" else "CPUExecutionProvider"
+    model = ORTModelForSpeechSeq2Seq.from_pretrained(str(model_dir), provider=provider)
+    options = {"language": language, "task": "transcribe"} if getattr(model.generation_config, "lang_to_id", None) else {}
+
+    def transcribe(samples):
+        features = processor.feature_extractor(samples, sampling_rate=SAMPLE_RATE, return_tensors="pt")
+        ids = model.generate(input_features=features.input_features, max_new_tokens=max_new_tokens, **options)
+        return processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
+
+    def close():
+        nonlocal model
+        model = None
+        gc.collect()
+
+    transcribe.device = "cuda" if device == "cuda" else "cpu"
+    return transcribe, close
+
+
 def open_backend(backend, model, device="auto", compute_type=None, language=DEFAULT_LANGUAGE):
     if backend == "ct2":
         return ct2_backend(model, device, compute_type, language)
     if backend == "hf":
         return hf_backend(model, language, device)
+    if backend == "onnx":
+        return onnx_backend(model, language, device)
     raise ValueError(f"backend must be one of {list(BACKENDS)}, got {backend!r}")
 
 
