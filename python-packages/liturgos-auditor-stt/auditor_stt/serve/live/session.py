@@ -43,7 +43,7 @@ from ..queue import QueueFullError
 from .clock import WallClock, iso
 from .push import PushDelivery, parse_delivery
 from .segmenter import SAMPLE_RATE, Segmenter, vad_speech_ranges
-from .source import LIVE_SCHEMES, FleetPcmStream, LocalPcmStream
+from .source import LIVE_SCHEMES, FleetPcmStream, LocalPcmStream, PushPcmStream
 
 logger = logging.getLogger(__name__)
 
@@ -116,10 +116,11 @@ def check_source(url, hosts):
 
 
 class LiveSession:
-    def __init__(self, manager, session_id, source, language, prompt, client_ref, delay_seconds=0.0, preroll=None, preroll_start_ms=None, delivery=None):
+    def __init__(self, manager, session_id, source, language, prompt, client_ref, delay_seconds=0.0, preroll=None, preroll_start_ms=None, delivery=None, input_mode="pull"):
         self.manager = manager
         self.id = session_id
         self.source = source
+        self.input_mode = input_mode
         self.language = language
         self.prompt = prompt
         self.client_ref = client_ref
@@ -138,11 +139,12 @@ class LiveSession:
         self._subscribers = []
         self._stop = threading.Event()
         self._stream = None
+        self._push_stream = PushPcmStream() if input_mode == "push" else None
         self._queue = None
         self._out = None
         self._loop = None
         self._tasks = []
-        self._scrub = _scrubber(source)
+        self._scrub = _scrubber(source) if source else (lambda s: s)
         self._first_wall = None
         self._delivery = delivery  # parsed push settings (holds the token) or None: SSE only
         self._push = None
@@ -251,6 +253,15 @@ class LiveSession:
 
     # --- the stream ------------------------------------------------------
 
+    def push_audio(self, data: bytes) -> bool:
+        if self._push_stream is None or self.finished or self._stop.is_set():
+            return False
+        return self._push_stream.write(data)
+
+    def finish_audio(self) -> None:
+        if self._push_stream is not None:
+            self._push_stream.finish()
+
     def _close_stream(self):
         stream, self._stream = self._stream, None
         if stream is not None:
@@ -266,7 +277,7 @@ class LiveSession:
             while not self._stop.is_set():
                 self.attempt += 1
                 received = await asyncio.to_thread(self._read_attempt)
-                if self._stop.is_set():
+                if self._stop.is_set() or self.input_mode == "push":
                     break
                 if received:
                     deadline_start, backoff = None, 1.0
@@ -305,7 +316,7 @@ class LiveSession:
             speech_ranges=self.manager.speech_ranges,
         )
         try:
-            stream = self.manager.open_stream(self.source, self.id, self.attempt)
+            stream = self._push_stream if self.input_mode == "push" else self.manager.open_stream(self.source, self.id, self.attempt)
         except Exception as exc:  # noqa: BLE001 - reported, then retried until the reconnect window ends
             self._post(self._publish, "error", {"message": self._scrub(str(exc) or type(exc).__name__)})
             return 0
@@ -527,8 +538,14 @@ class LiveManager:
 
     # --- sessions --------------------------------------------------------
 
-    def create(self, source, language, prompt=None, client_ref=None, delay_seconds=None, *, preroll=None, preroll_start_ms=None, delivery=None):
-        check_source(source, self.config.source_hosts)
+    def create(self, source, language, prompt=None, client_ref=None, delay_seconds=None, *, preroll=None, preroll_start_ms=None, delivery=None, input_mode=None):
+        mode = input_mode or ("push" if source in (None, "", "pcm://push") else "pull")
+        if mode not in ("pull", "push"):
+            raise LiveError(422, "input_mode must be 'pull' or 'push'")
+        if mode == "pull":
+            check_source(source, self.config.source_hosts)
+        else:
+            source = source or "pcm://push"
         delivery = parse_delivery(delivery, self.config.push_hosts, lambda message: LiveError(422, message))
         if delay_seconds is None:
             delay_seconds = self.config.default_delay_seconds
@@ -539,7 +556,7 @@ class LiveManager:
             raise LiveError(429, f"At most {self.config.max_sessions} live sessions at a time")
         session = LiveSession(
             self, uuid.uuid4().hex[:16], source, language, prompt, client_ref, delay_seconds,
-            preroll=preroll, preroll_start_ms=preroll_start_ms, delivery=delivery,
+            preroll=preroll, preroll_start_ms=preroll_start_ms, delivery=delivery, input_mode=mode,
         )
         self.sessions[session.id] = session
         session.start()

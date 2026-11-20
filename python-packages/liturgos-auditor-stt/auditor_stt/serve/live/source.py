@@ -5,6 +5,7 @@ empty at the end) and `close()`. `close()` is safe to call from another thread.
 """
 
 import logging
+import queue
 import shutil
 import subprocess
 import threading
@@ -141,3 +142,68 @@ class LocalPcmStream:
             self._process.stdout.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+class PushPcmStream:
+    """In-memory 16 kHz mono S16LE PCM stream fed directly via HTTP push (no ffmpeg)."""
+
+    def __init__(self, max_chunks: int = 512):
+        self._queue: queue.Queue[bytes | None] = queue.Queue(maxsize=max_chunks)
+        self._closed = threading.Event()
+        self._eof = False
+        self._rest = b""
+
+    def write(self, data: bytes) -> bool:
+        if self._closed.is_set() or self._eof or not data:
+            return False
+        try:
+            self._queue.put_nowait(data)
+            return True
+        except queue.Full:
+            # Drop oldest chunk to stay bounded without blocking the HTTP handler.
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(data)
+                return True
+            except queue.Full:
+                return False
+
+    def finish(self) -> None:
+        if self._eof:
+            return
+        self._eof = True
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(None)
+            except queue.Full:
+                pass
+
+    def read(self, size: int) -> bytes:
+        while len(self._rest) < size and not self._closed.is_set():
+            try:
+                chunk = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                if self._rest:
+                    break
+                continue
+            if chunk is None:
+                self._closed.set()
+                break
+            self._rest += chunk
+        data, self._rest = self._rest[:size], self._rest[size:]
+        return data
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self.finish()

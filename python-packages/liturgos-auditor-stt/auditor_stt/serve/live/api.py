@@ -29,7 +29,8 @@ class DelayRequest(BaseModel):
 
 
 class StartRequest(BaseModel):
-    source: str
+    source: Optional[str] = None
+    input_mode: Optional[str] = None
     language: Optional[str] = None
     prompt: Optional[str] = None
     client_ref: Optional[str] = None
@@ -111,11 +112,26 @@ async def start(request: Request):
         session = manager.create(
             body.source, body.language or request.app.state.default_language, body.prompt, body.client_ref,
             body.delay_seconds, preroll=preroll, preroll_start_ms=body.preroll_start_ms,
-            delivery=body.delivery,
+            delivery=body.delivery, input_mode=body.input_mode,
         )
     except LiveError as exc:
         raise HTTPException(exc.status, exc.message) from None
     return {**session.info(), "events_url": f"/v1/live/{session.id}/events"}
+
+
+@router.post("/{session_id}/audio")
+async def push_audio(session_id: str, request: Request):
+    """Accept raw 16 kHz mono S16LE PCM bytes for a push-mode live session."""
+    session = _session(request, session_id)
+    if session.input_mode != "push":
+        raise HTTPException(422, "Session is not in push input_mode")
+    data = await request.body()
+    if len(data) % 2:
+        raise HTTPException(422, "PCM byte length must be even (S16LE)")
+    accepted = len(data) if (data and session.push_audio(data)) else 0
+    if request.headers.get("x-eof") == "1":
+        session.finish_audio()
+    return {"accepted_bytes": accepted}
 
 
 @router.post("/{session_id}/radio-delay/report")

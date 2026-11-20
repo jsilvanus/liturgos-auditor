@@ -910,3 +910,24 @@ def test_live_config_reads_push_hosts_from_env():
     config = LiveConfig.from_env({"AUDITOR_STT_LIVE_PUSH_HOSTS": "Receiver.test, *.hooks.test"})
     assert config.push_hosts == ["receiver.test", "*.hooks.test"]
     assert LiveConfig.from_env({}).push_hosts == []
+
+
+def test_push_input_mode_accepts_raw_pcm_without_ffmpeg():
+    host = Host()
+    audio = pcm(np.concatenate([quiet(0.3), tone(1.2), quiet(1.0)]))
+    client, manager, _ = make_client(host, [])
+    with client:
+        res = client.post("/v1/live", json={"input_mode": "push", "language": "fi"})
+        assert res.status_code == 202
+        sid = res.json()["id"]
+        push_res = client.post(
+            f"/v1/live/{sid}/audio",
+            content=audio,
+            headers={"content-type": "application/octet-stream", "x-eof": "1"},
+        )
+        assert push_res.status_code == 200
+        assert push_res.json()["accepted_bytes"] == len(audio)
+        info = wait_ended(client, sid)
+    assert info["status"] == "ended"
+    assert info["transcripts"] >= 1
+    assert len(host.calls) >= 1
